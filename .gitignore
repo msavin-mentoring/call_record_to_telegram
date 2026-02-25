@@ -1,0 +1,7 @@
+.env
+data/*
+!data/.gitkeep
+.idea/
+.stuff/
+recordings/
+prompt.md

@@ -1,0 +1,10 @@
+services:
+  worker:
+    build: .
+    container_name: call-record-to-telegram
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${RECORDINGS_HOST_PATH:-/root/.jitsi-meet-cfg/jibri/recordings}:/recordings:ro
+      - ./data:/app/data
