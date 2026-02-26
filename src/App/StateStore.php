@@ -102,7 +102,7 @@ final class StateStore
 
         $decoded = json_decode($raw, true);
         if (!is_array($decoded)) {
-            \logMessage('State file is invalid JSON, starting with empty state.');
+            Logger::info('State file is invalid JSON, starting with empty state.');
             return;
         }
 

@@ -11,6 +11,7 @@ use Throwable;
 final class OpenAiClient
 {
     private Client $http;
+    private TextFormatter $textFormatter;
 
     public function __construct(
         private readonly ?string $apiKey,
@@ -20,6 +21,7 @@ final class OpenAiClient
         private readonly int $audioChunkSeconds,
         private readonly int $summaryChunkChars,
         ?Client $http = null,
+        ?TextFormatter $textFormatter = null,
     ) {
         $headers = [];
         if ($this->apiKey !== null && $this->apiKey !== '') {
@@ -33,6 +35,7 @@ final class OpenAiClient
             'http_errors' => true,
             'headers' => $headers,
         ]);
+        $this->textFormatter = $textFormatter ?? new TextFormatter();
     }
 
     public function isEnabled(): bool
@@ -51,7 +54,7 @@ final class OpenAiClient
 
         $chunks = $this->extractAudioChunks($videoFilePath, $tempDir);
         if ($chunks === []) {
-            \logMessage('OpenAI transcription skipped: no audio chunks produced.');
+            Logger::info('OpenAI transcription skipped: no audio chunks produced.');
             return null;
         }
 
@@ -61,7 +64,7 @@ final class OpenAiClient
             @unlink($chunkPath);
 
             if ($text === null) {
-                \logMessage('OpenAI transcription failed on chunk #' . ($index + 1));
+                Logger::info('OpenAI transcription failed on chunk #' . ($index + 1));
                 return null;
             }
 
@@ -72,13 +75,13 @@ final class OpenAiClient
 
         $transcript = trim(implode("\n\n", $parts));
         if ($transcript === '') {
-            \logMessage('OpenAI transcription returned empty text.');
+            Logger::info('OpenAI transcription returned empty text.');
             return null;
         }
 
         $summary = $this->summarizeTranscript($transcript);
         if ($summary === null || trim($summary) === '') {
-            \logMessage('OpenAI summary failed.');
+            Logger::info('OpenAI summary failed.');
             return null;
         }
 
@@ -108,9 +111,9 @@ final class OpenAiClient
             escapeshellarg($pattern)
         );
 
-        $result = \runCommand($command);
+        $result = CommandRunner::run($command);
         if ($result['code'] !== 0) {
-            \logMessage('ffmpeg audio extraction failed: ' . trim($result['stderr'] ?: $result['stdout']));
+            Logger::info('ffmpeg audio extraction failed: ' . trim($result['stderr'] ?: $result['stdout']));
             return [];
         }
 
@@ -125,7 +128,7 @@ final class OpenAiClient
     {
         $resource = fopen($chunkPath, 'rb');
         if ($resource === false) {
-            \logMessage('OpenAI transcription: failed to open chunk file: ' . $chunkPath);
+            Logger::info('OpenAI transcription: failed to open chunk file: ' . $chunkPath);
             return null;
         }
 
@@ -165,7 +168,7 @@ final class OpenAiClient
 
     private function summarizeTranscript(string $transcript): ?string
     {
-        $chunks = \splitTextByMaxLength($transcript, max(5000, $this->summaryChunkChars));
+        $chunks = $this->textFormatter->splitTextByMaxLength($transcript, max(5000, $this->summaryChunkChars));
         if ($chunks === []) {
             return null;
         }
@@ -249,13 +252,13 @@ final class OpenAiClient
             $response = $this->http->request($method, $uri, $options);
             $decoded = json_decode((string) $response->getBody(), true);
             if (!is_array($decoded)) {
-                \logMessage($context . ' returned non-JSON response.');
+                Logger::info($context . ' returned non-JSON response.');
                 return null;
             }
 
             if (isset($decoded['error'])) {
                 $message = is_array($decoded['error']) ? (string) ($decoded['error']['message'] ?? 'unknown error') : (string) $decoded['error'];
-                \logMessage($context . ' error: ' . $message);
+                Logger::info($context . ' error: ' . $message);
                 return null;
             }
 
@@ -265,7 +268,7 @@ final class OpenAiClient
             if ($e instanceof RequestException && $e->hasResponse()) {
                 $details = trim((string) $e->getResponse()->getBody());
             }
-            \logMessage($context . ' request failed: ' . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
+            Logger::info($context . ' request failed: ' . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
             return null;
         }
     }

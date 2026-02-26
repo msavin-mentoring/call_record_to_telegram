@@ -15,7 +15,7 @@ final class VideoProcessor
         $command = 'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 '
             . escapeshellarg($filePath);
 
-        $result = \runCommand($command);
+        $result = CommandRunner::run($command);
         if ($result['code'] !== 0) {
             return null;
         }
@@ -44,9 +44,9 @@ final class VideoProcessor
             escapeshellarg($outputFile)
         );
 
-        $result = \runCommand($command);
+        $result = CommandRunner::run($command);
         if ($result['code'] !== 0) {
-            \logMessage('ffmpeg failed for ' . $sourceFile . ': ' . trim($result['stderr'] ?: $result['stdout']));
+            Logger::info('ffmpeg failed for ' . $sourceFile . ': ' . trim($result['stderr'] ?: $result['stdout']));
             return false;
         }
 

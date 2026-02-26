@@ -34,7 +34,7 @@ final class TelegramClient
     {
         if ($this->chatId === null) {
             $this->chatId = $chatId;
-            \logMessage('Detected TELEGRAM_CHAT_ID=' . $chatId . ' from updates.');
+            Logger::info('Detected TELEGRAM_CHAT_ID=' . $chatId . ' from updates.');
         }
     }
 
@@ -133,13 +133,13 @@ final class TelegramClient
         string $mimeType
     ): ?array {
         if (!is_file($filePath)) {
-            \logMessage("Telegram {$method}: file does not exist: {$filePath}");
+            Logger::info("Telegram {$method}: file does not exist: {$filePath}");
             return null;
         }
 
         $fileResource = fopen($filePath, 'rb');
         if ($fileResource === false) {
-            \logMessage("Telegram {$method}: failed to open file: {$filePath}");
+            Logger::info("Telegram {$method}: failed to open file: {$filePath}");
             return null;
         }
 
@@ -177,7 +177,7 @@ final class TelegramClient
             $decoded = json_decode((string) $response->getBody(), true);
             if (!is_array($decoded) || !($decoded['ok'] ?? false)) {
                 $description = is_array($decoded) ? (string) ($decoded['description'] ?? 'unknown error') : 'invalid JSON response';
-                \logMessage("Telegram {$method} returned error: {$description}");
+                Logger::info("Telegram {$method} returned error: {$description}");
                 return null;
             }
 
@@ -188,7 +188,7 @@ final class TelegramClient
             if ($e instanceof RequestException && $e->hasResponse()) {
                 $details = trim((string) $e->getResponse()->getBody());
             }
-            \logMessage("Telegram {$method} failed: " . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
+            Logger::info("Telegram {$method} failed: " . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
             return null;
         }
     }
