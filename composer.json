@@ -1,0 +1,10 @@
+{
+  "name": "savinmikhail/call-record-to-telegram",
+  "type": "project",
+  "autoload": {
+    "psr-4": {
+      "App\\": "src/App/"
+    }
+  },
+  "require": {}
+}
