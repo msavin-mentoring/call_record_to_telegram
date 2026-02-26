@@ -166,7 +166,9 @@ final class TelegramClient
                 'timeout' => 600,
             ]);
         } finally {
-            fclose($fileResource);
+            if (is_resource($fileResource)) {
+                @fclose($fileResource);
+            }
         }
     }
 

@@ -155,7 +155,9 @@ final class OpenAiClient
                 'OpenAI transcription'
             );
         } finally {
-            fclose($resource);
+            if (is_resource($resource)) {
+                @fclose($resource);
+            }
         }
 
         if ($decoded === null) {
