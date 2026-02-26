@@ -141,6 +141,18 @@ final class ConversationHandler
             return;
         }
 
+        $incomingMessageId = (int) ($message['message_id'] ?? 0);
+        $minMessageId = (int) ($pending['prompt_message_id'] ?? 0);
+        if ($stage === 'await_participants') {
+            $minMessageId = (int) ($pending['participants_prompt_message_id'] ?? $minMessageId);
+        } elseif ($stage === 'await_summary_choice') {
+            $minMessageId = (int) ($pending['summary_prompt_message_id'] ?? $minMessageId);
+        }
+
+        if ($incomingMessageId > 0 && $minMessageId > 0 && $incomingMessageId <= $minMessageId) {
+            return;
+        }
+
         if ($stage === 'await_tags') {
             $tags = $this->parser->parseTagsFromText($text);
             if ($tags === []) {
@@ -163,11 +175,16 @@ final class ConversationHandler
             $state->setPending($pending);
             $state->save();
 
-            $telegram->sendMessage(
+            $participantsPrompt = $telegram->sendMessage(
                 $pendingChatId,
                 "Теги сохранены: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags)) .
                 "\nТеперь пришлите участников (ники), например: @msavin_dev @asdfasdf\nЕсли не хотите указывать, отправьте: -"
             );
+            if ($participantsPrompt !== null) {
+                $pending['participants_prompt_message_id'] = (int) ($participantsPrompt['message_id'] ?? 0);
+                $state->setPending($pending);
+                $state->save();
+            }
 
             return;
         }
@@ -273,11 +290,16 @@ final class ConversationHandler
                 $telegram->answerCallbackQuery($callbackId, 'Теги сохранены');
             }
 
-            $telegram->sendMessage(
+            $participantsPrompt = $telegram->sendMessage(
                 $chatId,
                 "Теги: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags)) .
                 "\nПришлите участников (ники), например: @msavin_dev @asdfasdf\nЕсли не хотите указывать, отправьте: -"
             );
+            if ($participantsPrompt !== null) {
+                $pending['participants_prompt_message_id'] = (int) ($participantsPrompt['message_id'] ?? 0);
+                $state->setPending($pending);
+                $state->save();
+            }
 
             return;
         }

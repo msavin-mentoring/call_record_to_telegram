@@ -9,9 +9,13 @@ use Throwable;
 
 final class WorkerApplication
 {
+    /** @var resource|null */
+    private $instanceLock = null;
+
     public function run(): void
     {
         $config = Config::fromEnv();
+        $this->acquireInstanceLock($config->stateFile);
 
         if (!is_dir($config->recordingsDir)) {
             throw new RuntimeException('RECORDINGS_DIR does not exist: ' . $config->recordingsDir);
@@ -70,5 +74,30 @@ final class WorkerApplication
                 break;
             }
         }
+    }
+
+    private function acquireInstanceLock(string $stateFile): void
+    {
+        $lockDir = dirname($stateFile);
+        if (!is_dir($lockDir) && !mkdir($lockDir, 0777, true) && !is_dir($lockDir)) {
+            throw new RuntimeException('Failed to create lock directory: ' . $lockDir);
+        }
+
+        $lockPath = $lockDir . DIRECTORY_SEPARATOR . 'worker.lock';
+        $handle = fopen($lockPath, 'cb+');
+        if ($handle === false) {
+            throw new RuntimeException('Failed to open lock file: ' . $lockPath);
+        }
+
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            throw new RuntimeException('Another worker instance is already running.');
+        }
+
+        ftruncate($handle, 0);
+        fwrite($handle, (string) getmypid());
+        fflush($handle);
+
+        $this->instanceLock = $handle;
     }
 }
