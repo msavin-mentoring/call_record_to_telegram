@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App;
 
+use Dotenv\Dotenv;
 use RuntimeException;
 
 final class Config
@@ -37,6 +38,8 @@ final class Config
 
     public static function fromEnv(): self
     {
+        self::bootstrapEnvValidation();
+
         return new self(
             recordingsDir: rtrim((string) getenv('RECORDINGS_DIR') ?: '/recordings', '/'),
             stateFile: (string) getenv('STATE_FILE') ?: '/app/data/state.json',
@@ -62,6 +65,33 @@ final class Config
             reminderNightStartHour: self::hourEnv('REMINDER_NIGHT_START_HOUR', 23),
             reminderNightEndHour: self::hourEnv('REMINDER_NIGHT_END_HOUR', 9),
         );
+    }
+
+    private static function bootstrapEnvValidation(): void
+    {
+        $dotenv = Dotenv::createImmutable(dirname(__DIR__, 2));
+        $dotenv->safeLoad();
+
+        $dotenv->required(['TELEGRAM_BOT_TOKEN'])->notEmpty();
+
+        $dotenv->ifPresent([
+            'POLL_INTERVAL_SECONDS',
+            'FILE_MIN_AGE_SECONDS',
+            'STABILITY_WAIT_SECONDS',
+            'CLIP_DURATION_SECONDS',
+            'UPDATES_TIMEOUT_SECONDS',
+            'OPENAI_AUDIO_CHUNK_SECONDS',
+            'OPENAI_SUMMARY_CHUNK_CHARS',
+            'REMINDER_BASE_SECONDS',
+            'REMINDER_MAX_SECONDS',
+            'REMINDER_NIGHT_START_HOUR',
+            'REMINDER_NIGHT_END_HOUR',
+        ])->isInteger();
+
+        $dotenv->ifPresent([
+            'RUN_ONCE',
+            'SEND_TRANSCRIPT_FILE',
+        ])->isBoolean();
     }
 
     private static function requiredEnv(string $name): string
