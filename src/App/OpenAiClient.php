@@ -4,8 +4,14 @@ declare(strict_types=1);
 
 namespace App;
 
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
+use Throwable;
+
 final class OpenAiClient
 {
+    private Client $http;
+
     public function __construct(
         private readonly ?string $apiKey,
         private readonly string $transcribeModel,
@@ -13,7 +19,20 @@ final class OpenAiClient
         private readonly ?string $language,
         private readonly int $audioChunkSeconds,
         private readonly int $summaryChunkChars,
+        ?Client $http = null,
     ) {
+        $headers = [];
+        if ($this->apiKey !== null && $this->apiKey !== '') {
+            $headers['Authorization'] = 'Bearer ' . $this->apiKey;
+        }
+
+        $this->http = $http ?? new Client([
+            'base_uri' => 'https://api.openai.com/v1/',
+            'timeout' => 300,
+            'connect_timeout' => 10,
+            'http_errors' => true,
+            'headers' => $headers,
+        ]);
     }
 
     public function isEnabled(): bool
@@ -104,32 +123,39 @@ final class OpenAiClient
 
     private function transcribeChunk(string $chunkPath): ?string
     {
-        $command = 'curl -sS --max-time 600 -X POST ' . escapeshellarg('https://api.openai.com/v1/audio/transcriptions')
-            . ' -H ' . escapeshellarg('Authorization: Bearer ' . $this->apiKey)
-            . ' -F ' . escapeshellarg('model=' . $this->transcribeModel)
-            . ' -F ' . escapeshellarg('response_format=json');
+        $resource = fopen($chunkPath, 'rb');
+        if ($resource === false) {
+            \logMessage('OpenAI transcription: failed to open chunk file: ' . $chunkPath);
+            return null;
+        }
+
+        $multipart = [
+            ['name' => 'model', 'contents' => $this->transcribeModel],
+            ['name' => 'response_format', 'contents' => 'json'],
+            [
+                'name' => 'file',
+                'contents' => $resource,
+                'filename' => basename($chunkPath),
+                'headers' => ['Content-Type' => 'audio/mp4'],
+            ],
+        ];
 
         if ($this->language !== null && $this->language !== '') {
-            $command .= ' -F ' . escapeshellarg('language=' . $this->language);
+            $multipart[] = ['name' => 'language', 'contents' => $this->language];
         }
 
-        $command .= ' -F ' . escapeshellarg('file=@' . $chunkPath . ';type=audio/mp4');
-
-        $result = \runCommand($command);
-        if ($result['code'] !== 0) {
-            \logMessage('OpenAI transcription request failed: ' . trim($result['stderr'] ?: $result['stdout']));
-            return null;
+        try {
+            $decoded = $this->requestJson(
+                'POST',
+                'audio/transcriptions',
+                ['multipart' => $multipart, 'timeout' => 600],
+                'OpenAI transcription'
+            );
+        } finally {
+            fclose($resource);
         }
 
-        $decoded = json_decode($result['stdout'], true);
-        if (!is_array($decoded)) {
-            \logMessage('OpenAI transcription returned non-JSON response.');
-            return null;
-        }
-
-        if (isset($decoded['error'])) {
-            $message = is_array($decoded['error']) ? (string) ($decoded['error']['message'] ?? 'unknown error') : (string) $decoded['error'];
-            \logMessage('OpenAI transcription error: ' . $message);
+        if ($decoded === null) {
             return null;
         }
 
@@ -202,47 +228,45 @@ final class OpenAiClient
             ],
         ];
 
-        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($payloadJson === false) {
-            return null;
-        }
+        $decoded = $this->requestJson(
+            'POST',
+            'chat/completions',
+            ['json' => $payload, 'timeout' => 300],
+            'OpenAI summary'
+        );
 
-        $payloadFile = tempnam(sys_get_temp_dir(), 'openai_payload_');
-        if ($payloadFile === false) {
-            return null;
-        }
-
-        if (file_put_contents($payloadFile, $payloadJson) === false) {
-            @unlink($payloadFile);
-            return null;
-        }
-
-        $command = 'curl -sS --max-time 300 -X POST ' . escapeshellarg('https://api.openai.com/v1/chat/completions')
-            . ' -H ' . escapeshellarg('Authorization: Bearer ' . $this->apiKey)
-            . ' -H ' . escapeshellarg('Content-Type: application/json')
-            . ' --data-binary @' . escapeshellarg($payloadFile);
-
-        $result = \runCommand($command);
-        @unlink($payloadFile);
-
-        if ($result['code'] !== 0) {
-            \logMessage('OpenAI summary request failed: ' . trim($result['stderr'] ?: $result['stdout']));
-            return null;
-        }
-
-        $decoded = json_decode($result['stdout'], true);
-        if (!is_array($decoded)) {
-            \logMessage('OpenAI summary returned non-JSON response.');
-            return null;
-        }
-
-        if (isset($decoded['error'])) {
-            $message = is_array($decoded['error']) ? (string) ($decoded['error']['message'] ?? 'unknown error') : (string) $decoded['error'];
-            \logMessage('OpenAI summary error: ' . $message);
+        if ($decoded === null) {
             return null;
         }
 
         $content = $decoded['choices'][0]['message']['content'] ?? null;
         return is_string($content) ? trim($content) : null;
+    }
+
+    private function requestJson(string $method, string $uri, array $options, string $context): ?array
+    {
+        try {
+            $response = $this->http->request($method, $uri, $options);
+            $decoded = json_decode((string) $response->getBody(), true);
+            if (!is_array($decoded)) {
+                \logMessage($context . ' returned non-JSON response.');
+                return null;
+            }
+
+            if (isset($decoded['error'])) {
+                $message = is_array($decoded['error']) ? (string) ($decoded['error']['message'] ?? 'unknown error') : (string) $decoded['error'];
+                \logMessage($context . ' error: ' . $message);
+                return null;
+            }
+
+            return $decoded;
+        } catch (Throwable $e) {
+            $details = '';
+            if ($e instanceof RequestException && $e->hasResponse()) {
+                $details = trim((string) $e->getResponse()->getBody());
+            }
+            \logMessage($context . ' request failed: ' . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
+            return null;
+        }
     }
 }

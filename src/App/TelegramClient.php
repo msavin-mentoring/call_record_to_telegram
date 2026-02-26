@@ -4,12 +4,25 @@ declare(strict_types=1);
 
 namespace App;
 
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
+use Throwable;
+
 final class TelegramClient
 {
+    private Client $http;
+
     public function __construct(
         private readonly string $token,
         private ?string $chatId,
+        ?Client $http = null,
     ) {
+        $this->http = $http ?? new Client([
+            'base_uri' => 'https://api.telegram.org/bot' . $this->token . '/',
+            'timeout' => 60,
+            'connect_timeout' => 10,
+            'http_errors' => true,
+        ]);
     }
 
     public function getChatId(): ?string
@@ -30,26 +43,16 @@ final class TelegramClient
      */
     public function getUpdates(int $offset, int $timeout): array
     {
-        $query = http_build_query([
-            'offset' => $offset,
-            'timeout' => max(0, $timeout),
-            'allowed_updates' => json_encode(['message', 'callback_query'], JSON_UNESCAPED_SLASHES),
+        $result = $this->callApi('GET', 'getUpdates', [
+            'query' => [
+                'offset' => $offset,
+                'timeout' => max(0, $timeout),
+                'allowed_updates' => json_encode(['message', 'callback_query'], JSON_UNESCAPED_SLASHES),
+            ],
+            'timeout' => 40,
         ]);
 
-        $url = $this->apiUrl('getUpdates') . '?' . $query;
-        $result = \runCommand('curl -sS --max-time 40 ' . escapeshellarg($url));
-        if ($result['code'] !== 0) {
-            \logMessage('Telegram getUpdates failed: ' . trim($result['stderr'] ?: $result['stdout']));
-            return [];
-        }
-
-        $decoded = json_decode($result['stdout'], true);
-        if (!is_array($decoded) || !($decoded['ok'] ?? false)) {
-            return [];
-        }
-
-        $updates = $decoded['result'] ?? [];
-        return is_array($updates) ? $updates : [];
+        return $result === null ? [] : $result;
     }
 
     public function sendMessage(string $chatId, string $text, ?array $replyMarkup = null): ?array
@@ -63,7 +66,7 @@ final class TelegramClient
             $fields['reply_markup'] = json_encode($replyMarkup, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         }
 
-        return $this->postUrlencoded('sendMessage', $fields);
+        return $this->postForm('sendMessage', $fields);
     }
 
     public function sendVideo(string $chatId, string $filePath, string $caption, ?array $replyMarkup = null): ?array
@@ -102,7 +105,7 @@ final class TelegramClient
             $fields['show_alert'] = 'false';
         }
 
-        $this->postUrlencoded('answerCallbackQuery', $fields);
+        $this->postForm('answerCallbackQuery', $fields);
     }
 
     public function editMessageReplyMarkup(string $chatId, int $messageId, array $replyMarkup): bool
@@ -113,18 +116,13 @@ final class TelegramClient
             'reply_markup' => json_encode($replyMarkup, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ];
 
-        $result = $this->postUrlencoded('editMessageReplyMarkup', $fields);
+        $result = $this->postForm('editMessageReplyMarkup', $fields);
         return $result !== null;
     }
 
-    private function postUrlencoded(string $method, array $fields): ?array
+    private function postForm(string $method, array $fields): ?array
     {
-        $command = 'curl -sS --max-time 60 -X POST ' . escapeshellarg($this->apiUrl($method));
-        foreach ($fields as $key => $value) {
-            $command .= ' --data-urlencode ' . escapeshellarg($key . '=' . (string) $value);
-        }
-
-        return $this->executeJson($command, $method);
+        return $this->callApi('POST', $method, ['form_params' => $fields]);
     }
 
     private function postMultipart(
@@ -139,36 +137,59 @@ final class TelegramClient
             return null;
         }
 
-        $command = 'curl -sS --max-time 600 -X POST ' . escapeshellarg($this->apiUrl($method));
+        $fileResource = fopen($filePath, 'rb');
+        if ($fileResource === false) {
+            \logMessage("Telegram {$method}: failed to open file: {$filePath}");
+            return null;
+        }
+
+        $multipart = [];
         foreach ($fields as $key => $value) {
-            $command .= ' -F ' . escapeshellarg($key . '=' . (string) $value);
+            $multipart[] = [
+                'name' => $key,
+                'contents' => (string) $value,
+            ];
         }
-        $command .= ' -F ' . escapeshellarg($fileField . '=@' . $filePath . ';type=' . $mimeType);
 
-        return $this->executeJson($command, $method);
+        $multipart[] = [
+            'name' => $fileField,
+            'contents' => $fileResource,
+            'filename' => basename($filePath),
+            'headers' => [
+                'Content-Type' => $mimeType,
+            ],
+        ];
+
+        try {
+            return $this->callApi('POST', $method, [
+                'multipart' => $multipart,
+                'timeout' => 600,
+            ]);
+        } finally {
+            fclose($fileResource);
+        }
     }
 
-    private function executeJson(string $command, string $method): ?array
+    private function callApi(string $httpMethod, string $method, array $options): ?array
     {
-        $result = \runCommand($command);
-        if ($result['code'] !== 0) {
-            \logMessage("Telegram {$method} failed: " . trim($result['stderr'] ?: $result['stdout']));
+        try {
+            $response = $this->http->request($httpMethod, $method, $options);
+            $decoded = json_decode((string) $response->getBody(), true);
+            if (!is_array($decoded) || !($decoded['ok'] ?? false)) {
+                $description = is_array($decoded) ? (string) ($decoded['description'] ?? 'unknown error') : 'invalid JSON response';
+                \logMessage("Telegram {$method} returned error: {$description}");
+                return null;
+            }
+
+            $result = $decoded['result'] ?? null;
+            return is_array($result) ? $result : [];
+        } catch (Throwable $e) {
+            $details = '';
+            if ($e instanceof RequestException && $e->hasResponse()) {
+                $details = trim((string) $e->getResponse()->getBody());
+            }
+            \logMessage("Telegram {$method} failed: " . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
             return null;
         }
-
-        $decoded = json_decode($result['stdout'], true);
-        if (!is_array($decoded) || !($decoded['ok'] ?? false)) {
-            $description = is_array($decoded) ? (string) ($decoded['description'] ?? 'unknown error') : 'invalid JSON response';
-            \logMessage("Telegram {$method} returned error: {$description}");
-            return null;
-        }
-
-        $resultData = $decoded['result'] ?? null;
-        return is_array($resultData) ? $resultData : null;
-    }
-
-    private function apiUrl(string $method): string
-    {
-        return 'https://api.telegram.org/bot' . $this->token . '/' . $method;
     }
 }
