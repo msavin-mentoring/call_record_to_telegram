@@ -1071,6 +1071,21 @@ function buildTagsKeyboard(array $selectedTags): array
     ];
 }
 
+/**
+ * @return array{inline_keyboard:array<int,array<int,array{ text:string, callback_data:string }>>}
+ */
+function buildSummaryChoiceKeyboard(): array
+{
+    return [
+        'inline_keyboard' => [
+            [
+                ['text' => 'Да', 'callback_data' => 'summary:yes'],
+                ['text' => 'Нет', 'callback_data' => 'summary:no'],
+            ],
+        ],
+    ];
+}
+
 function resolveChatIdFromUpdate(array $update): ?string
 {
     $messageChat = $update['message']['chat']['id'] ?? null;
@@ -1088,6 +1103,7 @@ function resolveChatIdFromUpdate(array $update): ?string
 
 function processUpdates(Config $config, StateStore $state, TelegramClient $telegram): void
 {
+    $openAiEnabled = $config->openAiApiKey !== null && trim($config->openAiApiKey) !== '';
     $updates = $telegram->getUpdates($state->getLastUpdateId() + 1, $config->updatesTimeoutSeconds);
     if ($updates === []) {
         return;
@@ -1109,13 +1125,18 @@ function processUpdates(Config $config, StateStore $state, TelegramClient $teleg
             }
         }
 
-        handleConversationUpdate($update, $state, $telegram);
+        handleConversationUpdate($update, $state, $telegram, $openAiEnabled);
     }
 
     $state->save();
 }
 
-function handleConversationUpdate(array $update, StateStore $state, TelegramClient $telegram): void
+function handleConversationUpdate(
+    array $update,
+    StateStore $state,
+    TelegramClient $telegram,
+    bool $openAiEnabled
+): void
 {
     $pending = $state->getPending();
     if ($pending === null) {
@@ -1152,6 +1173,28 @@ function handleConversationUpdate(array $update, StateStore $state, TelegramClie
             if (str_starts_with($callbackData, 'tag:')) {
                 handleTagCallback($callbackData, $callbackId, $pending, $state, $telegram);
             }
+        } elseif ($stage === 'await_summary_choice') {
+            $summaryPromptMessageId = (int) ($pending['summary_prompt_message_id'] ?? 0);
+            if ($messageId !== $summaryPromptMessageId) {
+                if ($callbackId !== '') {
+                    $telegram->answerCallbackQuery($callbackId, 'Эта кнопка уже неактуальна');
+                }
+                return;
+            }
+
+            if ($callbackData === 'summary:yes' || $callbackData === 'summary:no') {
+                $choice = $callbackData === 'summary:yes';
+                $pending['summary_requested'] = $choice;
+                $pending['stage'] = 'ready_finalize';
+                $state->setPending($pending);
+                $state->save();
+
+                if ($callbackId !== '') {
+                    $telegram->answerCallbackQuery($callbackId, $choice ? 'Сделаем саммари' : 'Саммари пропускаем');
+                }
+            } elseif ($callbackId !== '') {
+                $telegram->answerCallbackQuery($callbackId, 'Выберите Да или Нет');
+            }
         } else {
             if ($callbackId !== '') {
                 $telegram->answerCallbackQuery($callbackId, 'Отправьте участников текстом');
@@ -1184,6 +1227,8 @@ function handleConversationUpdate(array $update, StateStore $state, TelegramClie
         $pending['tags'] = $tags;
         $pending['stage'] = 'await_participants';
         $pending['participants_set'] = false;
+        $pending['summary_requested'] = null;
+        unset($pending['summary_prompt_message_id']);
         $state->setPending($pending);
         $state->save();
 
@@ -1210,9 +1255,56 @@ function handleConversationUpdate(array $update, StateStore $state, TelegramClie
         $pending['participants'] = $participants;
         $pending['participants_set'] = true;
         unset($pending['next_retry_at'], $pending['retry_notice_sent']);
+
+        if ($openAiEnabled) {
+            $summaryPrompt = $telegram->sendMessage(
+                $pendingChatId,
+                "Нужно сделать саммари по созвону?",
+                buildSummaryChoiceKeyboard()
+            );
+            $pending['stage'] = 'await_summary_choice';
+            $pending['summary_requested'] = null;
+            if ($summaryPrompt !== null) {
+                $pending['summary_prompt_message_id'] = (int) ($summaryPrompt['message_id'] ?? 0);
+            } else {
+                $pending['summary_requested'] = false;
+                $pending['stage'] = 'ready_finalize';
+            }
+        } else {
+            $pending['summary_requested'] = false;
+            $pending['stage'] = 'ready_finalize';
+        }
+
+        $state->setPending($pending);
+        $state->save();
+        return;
+    }
+
+    if ($stage === 'await_summary_choice') {
+        $choice = parseYesNoChoice($text);
+        if ($choice === null) {
+            $telegram->sendMessage(
+                $pendingChatId,
+                'Ответьте "да" или "нет" (или используйте кнопки).'
+            );
+            return;
+        }
+
+        $pending['summary_requested'] = $choice;
+        $pending['stage'] = 'ready_finalize';
         $state->setPending($pending);
         $state->save();
     }
+}
+
+function parseYesNoChoice(string $text): ?bool
+{
+    $value = lowerCase(trim($text));
+    return match ($value) {
+        'да', 'yes', 'y', '+', 'ok', 'ага' => true,
+        'нет', 'no', 'n', '-', 'не', 'nope' => false,
+        default => null,
+    };
 }
 
 function handleTagCallback(
@@ -1239,6 +1331,8 @@ function handleTagCallback(
 
         $pending['stage'] = 'await_participants';
         $pending['participants_set'] = false;
+        $pending['summary_requested'] = null;
+        unset($pending['summary_prompt_message_id']);
         $state->setPending($pending);
         $state->save();
 
@@ -1359,6 +1453,7 @@ function maybeStartNextRecording(
             'tags' => [],
             'participants' => [],
             'participants_set' => false,
+            'summary_requested' => null,
             'prompt_message_id' => $promptMessageId,
             'date' => detectRecordingDate($key, $file),
         ];
@@ -1383,7 +1478,38 @@ function maybeFinalizePending(
         return;
     }
 
-    if (($pending['stage'] ?? '') !== 'await_participants') {
+    $stage = (string) ($pending['stage'] ?? '');
+    if ($stage === 'await_participants' && (bool) ($pending['participants_set'] ?? false)) {
+        $chatIdForPrompt = (string) ($pending['chat_id'] ?? '');
+        if ($chatIdForPrompt === '') {
+            return;
+        }
+
+        if ($openAi->isEnabled()) {
+            $summaryPrompt = $telegram->sendMessage(
+                $chatIdForPrompt,
+                "Нужно сделать саммари по созвону?",
+                buildSummaryChoiceKeyboard()
+            );
+
+            $pending['stage'] = 'await_summary_choice';
+            $pending['summary_requested'] = null;
+            if ($summaryPrompt !== null) {
+                $pending['summary_prompt_message_id'] = (int) ($summaryPrompt['message_id'] ?? 0);
+            }
+            $state->setPending($pending);
+            $state->save();
+            return;
+        }
+
+        $pending['summary_requested'] = false;
+        $pending['stage'] = 'ready_finalize';
+        $state->setPending($pending);
+        $state->save();
+        $stage = 'ready_finalize';
+    }
+
+    if ($stage !== 'ready_finalize') {
         return;
     }
 
@@ -1448,8 +1574,9 @@ function maybeFinalizePending(
     $transcript = null;
     $summary = null;
     $transcriptionStatus = 'disabled';
+    $summaryRequested = (bool) ($pending['summary_requested'] ?? false);
 
-    if ($openAi->isEnabled()) {
+    if ($openAi->isEnabled() && $summaryRequested) {
         logMessage('Starting OpenAI transcription and summary for: ' . $key);
         $transcriptionStatus = 'failed';
         $openAiResult = $openAi->transcribeAndSummarize($filePath, $config->tempDir);
@@ -1477,6 +1604,8 @@ function maybeFinalizePending(
         } else {
             $telegram->sendMessage($chatId, 'Не удалось получить транскрипт/саммари через OpenAI.');
         }
+    } elseif ($openAi->isEnabled()) {
+        $transcriptionStatus = 'skipped_by_user';
     }
 
     $transcriptPreview = $transcript === null ? null : truncateForTelegram($transcript, 2000);
@@ -1489,6 +1618,7 @@ function maybeFinalizePending(
         'tags' => $tags,
         'participants' => $participants,
         'date' => $date,
+        'summary_requested' => $summaryRequested,
         'transcription_status' => $transcriptionStatus,
         'transcript_preview' => $transcriptPreview,
         'transcript_chars' => $transcriptChars,
