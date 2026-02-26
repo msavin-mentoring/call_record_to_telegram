@@ -8,3 +8,4 @@ services:
     volumes:
       - ${RECORDINGS_HOST_PATH:-/root/.jitsi-meet-cfg/jibri/recordings}:/recordings:ro
       - ./data:/app/data
+      - ./src:/app/src

@@ -11,6 +11,8 @@ PHP-воркер в Docker, который:
   - `теги: #мок, #резюме`
   - `участники: @msavin_dev, @asdfasdf`
   - `дата: 2025-12-03`
+- после этого (при включенном OpenAI) делает транскрипт и отправляет саммари;
+- опционально отправляет полный транскрипт отдельным `.txt` файлом;
 - помечает запись как обработанную в `state.json`, чтобы не отправлять повторно.
 
 ## Быстрый старт
@@ -24,11 +26,18 @@ cp .env.example .env
 2. Заполните в `.env` минимум:
 - `TELEGRAM_BOT_TOKEN`
 - при необходимости `TELEGRAM_CHAT_ID` (если пусто, воркер попробует взять chat id из `getUpdates`)
+- `OPENAI_API_KEY` (если хотите транскрипцию и саммари через OpenAI)
 
 3. Запустите:
 
 ```bash
 docker compose up -d --build
+```
+
+После первого билда код из `./src` монтируется в контейнер, поэтому для применения изменений в `worker.php` достаточно:
+
+```bash
+docker compose up -d --force-recreate worker
 ```
 
 4. Посмотреть логи:
@@ -55,6 +64,13 @@ RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
 - `CLIP_DURATION_SECONDS` — длительность клипа (по умолчанию 10)
 - `RUN_ONCE` — `true` для одного прохода и выхода (удобно для cron/ручного теста)
 - `UPDATES_TIMEOUT_SECONDS` — timeout long polling для `getUpdates` (обычно 1-5 секунд)
+- `OPENAI_API_KEY` — API ключ OpenAI (если пусто, шаг транскрибации/саммари пропускается)
+- `OPENAI_TRANSCRIBE_MODEL` — модель транскрибации (по умолчанию `gpt-4o-mini-transcribe`)
+- `OPENAI_SUMMARY_MODEL` — модель саммари (по умолчанию `gpt-4o-mini`)
+- `OPENAI_TRANSCRIBE_LANGUAGE` — язык для ASR (например `ru`)
+- `OPENAI_AUDIO_CHUNK_SECONDS` — длина аудио-чанка для транскрибации (секунды)
+- `OPENAI_SUMMARY_CHUNK_CHARS` — размер текстового чанка для map-reduce саммари
+- `SEND_TRANSCRIPT_FILE` — отправлять ли `.txt` файл с полным транскриптом
 
 ## Примечания
 
@@ -62,3 +78,4 @@ RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
 - Для автоопределения `TELEGRAM_CHAT_ID` отправьте любое сообщение боту перед запуском воркера.
 - Записи обрабатываются строго по одной: следующий файл пойдет только после ввода тегов и участников по текущему.
 - Состояние хранится в `./data/state.json` (`processed`, `pending`, `last_update_id`, `chat_id`).
+- Для длинных видео транскрибация делается чанками (аудио сегменты), затем собирается общий саммари.

@@ -23,6 +23,13 @@ final class Config
         public readonly int $clipDurationSeconds,
         public readonly bool $runOnce,
         public readonly int $updatesTimeoutSeconds,
+        public readonly ?string $openAiApiKey,
+        public readonly string $openAiTranscribeModel,
+        public readonly string $openAiSummaryModel,
+        public readonly ?string $openAiLanguage,
+        public readonly int $openAiAudioChunkSeconds,
+        public readonly int $openAiSummaryChunkChars,
+        public readonly bool $sendTranscriptFile,
     ) {
     }
 
@@ -40,6 +47,13 @@ final class Config
             clipDurationSeconds: self::intEnv('CLIP_DURATION_SECONDS', 10),
             runOnce: self::boolEnv('RUN_ONCE', false),
             updatesTimeoutSeconds: self::intEnv('UPDATES_TIMEOUT_SECONDS', 2),
+            openAiApiKey: self::nullableEnv('OPENAI_API_KEY'),
+            openAiTranscribeModel: self::stringEnv('OPENAI_TRANSCRIBE_MODEL', 'gpt-4o-mini-transcribe'),
+            openAiSummaryModel: self::stringEnv('OPENAI_SUMMARY_MODEL', 'gpt-4o-mini'),
+            openAiLanguage: self::nullableEnv('OPENAI_TRANSCRIBE_LANGUAGE'),
+            openAiAudioChunkSeconds: self::intEnv('OPENAI_AUDIO_CHUNK_SECONDS', 900),
+            openAiSummaryChunkChars: self::intEnv('OPENAI_SUMMARY_CHUNK_CHARS', 30000),
+            sendTranscriptFile: self::boolEnv('SEND_TRANSCRIPT_FILE', true),
         );
     }
 
@@ -61,6 +75,16 @@ final class Config
         }
 
         return trim($value);
+    }
+
+    private static function stringEnv(string $name, string $default): string
+    {
+        $value = getenv($name);
+        if ($value === false || trim((string) $value) === '') {
+            return $default;
+        }
+
+        return trim((string) $value);
     }
 
     private static function intEnv(string $name, int $default): int
@@ -272,14 +296,19 @@ final class TelegramClient
         return $this->postMultipart('sendVideo', $fields, 'video', $filePath, 'video/mp4');
     }
 
-    public function sendDocument(string $chatId, string $filePath, string $caption): ?array
+    public function sendDocument(
+        string $chatId,
+        string $filePath,
+        string $caption,
+        string $mimeType = 'application/octet-stream'
+    ): ?array
     {
         $fields = [
             'chat_id' => $chatId,
             'caption' => $caption,
         ];
 
-        return $this->postMultipart('sendDocument', $fields, 'document', $filePath, 'video/mp4');
+        return $this->postMultipart('sendDocument', $fields, 'document', $filePath, $mimeType);
     }
 
     public function answerCallbackQuery(string $callbackQueryId, string $text = ''): void
@@ -408,6 +437,249 @@ final class VideoProcessor
         }
 
         return is_file($outputFile) && ((int) filesize($outputFile)) > 0;
+    }
+}
+
+final class OpenAiClient
+{
+    public function __construct(
+        private readonly ?string $apiKey,
+        private readonly string $transcribeModel,
+        private readonly string $summaryModel,
+        private readonly ?string $language,
+        private readonly int $audioChunkSeconds,
+        private readonly int $summaryChunkChars,
+    ) {
+    }
+
+    public function isEnabled(): bool
+    {
+        return $this->apiKey !== null && $this->apiKey !== '';
+    }
+
+    /**
+     * @return array{transcript:string,summary:string,chunks:int}|null
+     */
+    public function transcribeAndSummarize(string $videoFilePath, string $tempDir): ?array
+    {
+        if (!$this->isEnabled()) {
+            return null;
+        }
+
+        $chunks = $this->extractAudioChunks($videoFilePath, $tempDir);
+        if ($chunks === []) {
+            logMessage('OpenAI transcription skipped: no audio chunks produced.');
+            return null;
+        }
+
+        $parts = [];
+        foreach ($chunks as $index => $chunkPath) {
+            $text = $this->transcribeChunk($chunkPath);
+            @unlink($chunkPath);
+
+            if ($text === null) {
+                logMessage('OpenAI transcription failed on chunk #' . ($index + 1));
+                return null;
+            }
+
+            if (trim($text) !== '') {
+                $parts[] = trim($text);
+            }
+        }
+
+        $transcript = trim(implode("\n\n", $parts));
+        if ($transcript === '') {
+            logMessage('OpenAI transcription returned empty text.');
+            return null;
+        }
+
+        $summary = $this->summarizeTranscript($transcript);
+        if ($summary === null || trim($summary) === '') {
+            logMessage('OpenAI summary failed.');
+            return null;
+        }
+
+        return [
+            'transcript' => $transcript,
+            'summary' => trim($summary),
+            'chunks' => count($chunks),
+        ];
+    }
+
+    /**
+     * @return string[]
+     */
+    private function extractAudioChunks(string $videoFilePath, string $tempDir): array
+    {
+        if (!is_dir($tempDir) && !mkdir($tempDir, 0777, true) && !is_dir($tempDir)) {
+            return [];
+        }
+
+        $hash = substr(sha1($videoFilePath), 0, 12);
+        $pattern = $tempDir . DIRECTORY_SEPARATOR . 'audio_' . $hash . '_%03d.m4a';
+
+        $command = sprintf(
+            'ffmpeg -hide_banner -loglevel error -y -i %s -vn -ac 1 -ar 16000 -c:a aac -b:a 48k -f segment -segment_time %d -reset_timestamps 1 %s',
+            escapeshellarg($videoFilePath),
+            max(60, $this->audioChunkSeconds),
+            escapeshellarg($pattern)
+        );
+
+        $result = runCommand($command);
+        if ($result['code'] !== 0) {
+            logMessage('ffmpeg audio extraction failed: ' . trim($result['stderr'] ?: $result['stdout']));
+            return [];
+        }
+
+        $globPattern = $tempDir . DIRECTORY_SEPARATOR . 'audio_' . $hash . '_*.m4a';
+        $files = glob($globPattern) ?: [];
+        sort($files);
+
+        return array_values(array_filter($files, static fn(string $path): bool => is_file($path) && ((int) filesize($path)) > 0));
+    }
+
+    private function transcribeChunk(string $chunkPath): ?string
+    {
+        $command = 'curl -sS --max-time 600 -X POST ' . escapeshellarg('https://api.openai.com/v1/audio/transcriptions')
+            . ' -H ' . escapeshellarg('Authorization: Bearer ' . $this->apiKey)
+            . ' -F ' . escapeshellarg('model=' . $this->transcribeModel)
+            . ' -F ' . escapeshellarg('response_format=json');
+
+        if ($this->language !== null && $this->language !== '') {
+            $command .= ' -F ' . escapeshellarg('language=' . $this->language);
+        }
+
+        $command .= ' -F ' . escapeshellarg('file=@' . $chunkPath . ';type=audio/mp4');
+
+        $result = runCommand($command);
+        if ($result['code'] !== 0) {
+            logMessage('OpenAI transcription request failed: ' . trim($result['stderr'] ?: $result['stdout']));
+            return null;
+        }
+
+        $decoded = json_decode($result['stdout'], true);
+        if (!is_array($decoded)) {
+            logMessage('OpenAI transcription returned non-JSON response.');
+            return null;
+        }
+
+        if (isset($decoded['error'])) {
+            $message = is_array($decoded['error']) ? (string) ($decoded['error']['message'] ?? 'unknown error') : (string) $decoded['error'];
+            logMessage('OpenAI transcription error: ' . $message);
+            return null;
+        }
+
+        $text = $decoded['text'] ?? null;
+        return is_string($text) ? $text : null;
+    }
+
+    private function summarizeTranscript(string $transcript): ?string
+    {
+        $chunks = splitTextByMaxLength($transcript, max(5000, $this->summaryChunkChars));
+        if ($chunks === []) {
+            return null;
+        }
+
+        if (count($chunks) === 1) {
+            return $this->summarizeSingleText(
+                $chunks[0],
+                "Сделай короткое саммари созвона на русском.\n" .
+                "Формат:\n" .
+                "1) Краткое резюме (2-4 пункта)\n" .
+                "2) Ключевые решения\n" .
+                "3) Задачи/экшены (если есть)\n" .
+                "4) Риски/блокеры (если есть)\n" .
+                "Пиши только по фактам из транскрипта."
+            );
+        }
+
+        $partialSummaries = [];
+        foreach ($chunks as $index => $chunk) {
+            $partial = $this->summarizeSingleText(
+                $chunk,
+                "Ниже часть транскрипта созвона (часть " . ($index + 1) . " из " . count($chunks) . ").\n" .
+                "Сделай краткую выжимку: факты, решения, задачи, риски."
+            );
+
+            if ($partial !== null && trim($partial) !== '') {
+                $partialSummaries[] = trim($partial);
+            }
+        }
+
+        if ($partialSummaries === []) {
+            return null;
+        }
+
+        return $this->summarizeSingleText(
+            implode("\n\n---\n\n", $partialSummaries),
+            "Объедини частичные выжимки созвона в одно итоговое саммари на русском.\n" .
+            "Формат:\n" .
+            "1) Краткое резюме (2-4 пункта)\n" .
+            "2) Ключевые решения\n" .
+            "3) Задачи/экшены\n" .
+            "4) Риски/блокеры"
+        );
+    }
+
+    private function summarizeSingleText(string $text, string $instruction): ?string
+    {
+        $payload = [
+            'model' => $this->summaryModel,
+            'temperature' => 0.2,
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => 'Ты помощник для пост-обработки созвонов. Пиши структурированно и кратко.',
+                ],
+                [
+                    'role' => 'user',
+                    'content' => $instruction . "\n\nТранскрипт:\n" . $text,
+                ],
+            ],
+        ];
+
+        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($payloadJson === false) {
+            return null;
+        }
+
+        $payloadFile = tempnam(sys_get_temp_dir(), 'openai_payload_');
+        if ($payloadFile === false) {
+            return null;
+        }
+
+        if (file_put_contents($payloadFile, $payloadJson) === false) {
+            @unlink($payloadFile);
+            return null;
+        }
+
+        $command = 'curl -sS --max-time 300 -X POST ' . escapeshellarg('https://api.openai.com/v1/chat/completions')
+            . ' -H ' . escapeshellarg('Authorization: Bearer ' . $this->apiKey)
+            . ' -H ' . escapeshellarg('Content-Type: application/json')
+            . ' --data-binary @' . escapeshellarg($payloadFile);
+
+        $result = runCommand($command);
+        @unlink($payloadFile);
+
+        if ($result['code'] !== 0) {
+            logMessage('OpenAI summary request failed: ' . trim($result['stderr'] ?: $result['stdout']));
+            return null;
+        }
+
+        $decoded = json_decode($result['stdout'], true);
+        if (!is_array($decoded)) {
+            logMessage('OpenAI summary returned non-JSON response.');
+            return null;
+        }
+
+        if (isset($decoded['error'])) {
+            $message = is_array($decoded['error']) ? (string) ($decoded['error']['message'] ?? 'unknown error') : (string) $decoded['error'];
+            logMessage('OpenAI summary error: ' . $message);
+            return null;
+        }
+
+        $content = $decoded['choices'][0]['message']['content'] ?? null;
+        return is_string($content) ? trim($content) : null;
     }
 }
 
@@ -632,6 +904,142 @@ function parseParticipantsFromText(string $text): array
     }
 
     return array_values(array_unique($participants));
+}
+
+/**
+ * @return string[]
+ */
+function splitTextByMaxLength(string $text, int $maxLength): array
+{
+    $text = trim($text);
+    if ($text === '') {
+        return [];
+    }
+
+    $maxLength = max(1000, $maxLength);
+    if (strlen($text) <= $maxLength) {
+        return [$text];
+    }
+
+    $parts = [];
+    $current = '';
+    $paragraphs = preg_split("/\n{2,}/", $text) ?: [];
+
+    foreach ($paragraphs as $paragraph) {
+        $paragraph = trim($paragraph);
+        if ($paragraph === '') {
+            continue;
+        }
+
+        if ($current === '') {
+            if (strlen($paragraph) <= $maxLength) {
+                $current = $paragraph;
+                continue;
+            }
+
+            $sentences = preg_split('/(?<=[.!?])\s+/u', $paragraph) ?: [$paragraph];
+            foreach ($sentences as $sentence) {
+                $sentence = trim($sentence);
+                if ($sentence === '') {
+                    continue;
+                }
+
+                if ($current === '') {
+                    $current = $sentence;
+                    continue;
+                }
+
+                if (strlen($current . ' ' . $sentence) <= $maxLength) {
+                    $current .= ' ' . $sentence;
+                } else {
+                    $parts[] = $current;
+                    $current = $sentence;
+                }
+            }
+
+            continue;
+        }
+
+        if (strlen($current . "\n\n" . $paragraph) <= $maxLength) {
+            $current .= "\n\n" . $paragraph;
+            continue;
+        }
+
+        $parts[] = $current;
+        if (strlen($paragraph) <= $maxLength) {
+            $current = $paragraph;
+            continue;
+        }
+
+        $current = '';
+        $sentences = preg_split('/(?<=[.!?])\s+/u', $paragraph) ?: [$paragraph];
+        foreach ($sentences as $sentence) {
+            $sentence = trim($sentence);
+            if ($sentence === '') {
+                continue;
+            }
+
+            if ($current === '') {
+                $current = $sentence;
+                continue;
+            }
+
+            if (strlen($current . ' ' . $sentence) <= $maxLength) {
+                $current .= ' ' . $sentence;
+            } else {
+                $parts[] = $current;
+                $current = $sentence;
+            }
+        }
+    }
+
+    if ($current !== '') {
+        $parts[] = $current;
+    }
+
+    return $parts;
+}
+
+function truncateForTelegram(string $text, int $maxChars = 3800): string
+{
+    $text = trim($text);
+    if ($text === '') {
+        return '—';
+    }
+
+    if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+        if (mb_strlen($text) <= $maxChars) {
+            return $text;
+        }
+
+        return mb_substr($text, 0, max(100, $maxChars - 20)) . "\n...\n[обрезано]";
+    }
+
+    if (strlen($text) <= $maxChars) {
+        return $text;
+    }
+
+    return substr($text, 0, max(100, $maxChars - 20)) . "\n...\n[obrezano]";
+}
+
+function writeTranscriptToTempFile(string $tempDir, string $key, string $transcript): ?string
+{
+    if (!is_dir($tempDir) && !mkdir($tempDir, 0777, true) && !is_dir($tempDir)) {
+        return null;
+    }
+
+    $safeBase = preg_replace('/[^A-Za-z0-9._-]+/', '_', pathinfo($key, PATHINFO_FILENAME));
+    if (!is_string($safeBase) || $safeBase === '') {
+        $safeBase = 'transcript';
+    }
+
+    $path = $tempDir . DIRECTORY_SEPARATOR . $safeBase . '_transcript.txt';
+    $content = "Транскрипт для: {$key}\n\n" . trim($transcript) . "\n";
+    if (file_put_contents($path, $content) === false) {
+        return null;
+    }
+
+    return $path;
 }
 
 /**
@@ -963,7 +1371,12 @@ function maybeStartNextRecording(
     }
 }
 
-function maybeFinalizePending(Config $config, StateStore $state, TelegramClient $telegram): void
+function maybeFinalizePending(
+    Config $config,
+    StateStore $state,
+    TelegramClient $telegram,
+    OpenAiClient $openAi
+): void
 {
     $pending = $state->getPending();
     if ($pending === null) {
@@ -1014,7 +1427,7 @@ function maybeFinalizePending(Config $config, StateStore $state, TelegramClient 
 
     $sent = $telegram->sendVideo($chatId, $filePath, $caption);
     if ($sent === null) {
-        $sent = $telegram->sendDocument($chatId, $filePath, $caption);
+        $sent = $telegram->sendDocument($chatId, $filePath, $caption, 'video/mp4');
     }
 
     if ($sent === null) {
@@ -1032,6 +1445,43 @@ function maybeFinalizePending(Config $config, StateStore $state, TelegramClient 
     $size = filesize($filePath);
     $mtime = filemtime($filePath);
 
+    $transcript = null;
+    $summary = null;
+    $transcriptionStatus = 'disabled';
+
+    if ($openAi->isEnabled()) {
+        logMessage('Starting OpenAI transcription and summary for: ' . $key);
+        $transcriptionStatus = 'failed';
+        $openAiResult = $openAi->transcribeAndSummarize($filePath, $config->tempDir);
+
+        if ($openAiResult !== null) {
+            $transcriptionStatus = 'ok';
+            $transcript = $openAiResult['transcript'];
+            $summary = $openAiResult['summary'];
+
+            $summaryMessage = "саммари:\n" . truncateForTelegram($summary, 3800);
+            $telegram->sendMessage($chatId, $summaryMessage);
+
+            if ($config->sendTranscriptFile && $transcript !== null && trim($transcript) !== '') {
+                $transcriptFile = writeTranscriptToTempFile($config->tempDir, $key, $transcript);
+                if ($transcriptFile !== null) {
+                    $telegram->sendDocument(
+                        $chatId,
+                        $transcriptFile,
+                        'Транскрипт: ' . basename($filePath),
+                        'text/plain'
+                    );
+                    @unlink($transcriptFile);
+                }
+            }
+        } else {
+            $telegram->sendMessage($chatId, 'Не удалось получить транскрипт/саммари через OpenAI.');
+        }
+    }
+
+    $transcriptPreview = $transcript === null ? null : truncateForTelegram($transcript, 2000);
+    $transcriptChars = $transcript === null ? 0 : strlen($transcript);
+
     $state->markProcessed($key, [
         'processed_at' => date(DATE_ATOM),
         'size' => $size === false ? null : (int) $size,
@@ -1039,6 +1489,10 @@ function maybeFinalizePending(Config $config, StateStore $state, TelegramClient 
         'tags' => $tags,
         'participants' => $participants,
         'date' => $date,
+        'transcription_status' => $transcriptionStatus,
+        'transcript_preview' => $transcriptPreview,
+        'transcript_chars' => $transcriptChars,
+        'summary' => $summary,
     ]);
 
     $state->clearPending();
@@ -1082,6 +1536,14 @@ function run(): void
 
     $telegram = new TelegramClient($config->telegramToken, $initialChatId);
     $videoProcessor = new VideoProcessor($config->clipDurationSeconds);
+    $openAi = new OpenAiClient(
+        $config->openAiApiKey,
+        $config->openAiTranscribeModel,
+        $config->openAiSummaryModel,
+        $config->openAiLanguage,
+        $config->openAiAudioChunkSeconds,
+        $config->openAiSummaryChunkChars
+    );
 
     logMessage('Worker started. Watching directory: ' . $config->recordingsDir);
 
@@ -1089,7 +1551,7 @@ function run(): void
     while (true) {
         try {
             processUpdates($config, $state, $telegram);
-            maybeFinalizePending($config, $state, $telegram);
+            maybeFinalizePending($config, $state, $telegram, $openAi);
 
             if (time() >= $nextScanAt) {
                 maybeStartNextRecording($config, $state, $videoProcessor, $telegram);
