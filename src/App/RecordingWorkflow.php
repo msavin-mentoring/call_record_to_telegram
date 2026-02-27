@@ -349,11 +349,11 @@ final class RecordingWorkflow
         }
 
         $targetBytes = max(5 * 1024 * 1024, $config->telegramUploadMaxBytes);
-        $segmentSeconds = (int) floor($duration * ($targetBytes / max(1, (int) $size)) * 0.9);
-        $segmentSeconds = max(120, min((int) ceil($duration), $segmentSeconds));
+        $segmentSeconds = (int) floor($duration * ($targetBytes / max(1, (int) $size)) * 0.98);
+        $segmentSeconds = max(90, min((int) ceil($duration), $segmentSeconds));
 
         $notified = false;
-        for ($attempt = 1; $attempt <= 4; $attempt++) {
+        for ($attempt = 1; $attempt <= 6; $attempt++) {
             $prefix = substr(sha1($key), 0, 12) . '_full_part_' . $attempt;
             $parts = $videoProcessor->splitIntoSegments($filePath, $config->tempDir, $prefix, $segmentSeconds);
             if ($parts === []) {
@@ -368,9 +368,10 @@ final class RecordingWorkflow
                 }
             }
 
-            if ($maxPartSize > (int) ($targetBytes * 1.02)) {
+            // If segment estimation overshot too much, shrink before upload attempts.
+            if ($maxPartSize > (int) ($targetBytes * 1.08)) {
                 $this->cleanupTempFiles($parts);
-                $segmentSeconds = max(60, (int) floor($segmentSeconds * 0.7));
+                $segmentSeconds = max(60, (int) floor($segmentSeconds * 0.85));
                 continue;
             }
 
@@ -401,7 +402,7 @@ final class RecordingWorkflow
             }
 
             if ($lastErrorCode === 413) {
-                $segmentSeconds = max(60, (int) floor($segmentSeconds * 0.6));
+                $segmentSeconds = max(60, (int) floor($segmentSeconds * 0.85));
                 continue;
             }
 
