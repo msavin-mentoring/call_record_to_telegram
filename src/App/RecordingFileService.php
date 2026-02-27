@@ -108,6 +108,32 @@ final class RecordingFileService
         return date('Y-m-d');
     }
 
+    /**
+     * @return array{date:string,time:string}
+     */
+    public function detectRecordingDateTime(string $relativeKey, string $filePath): array
+    {
+        if (preg_match('/_(\d{4}-\d{2}-\d{2})-(\d{2})-(\d{2})-(\d{2})\.mp4$/', basename($relativeKey), $matches) === 1) {
+            return [
+                'date' => $matches[1],
+                'time' => "{$matches[2]}:{$matches[3]}:{$matches[4]}",
+            ];
+        }
+
+        $mtime = filemtime($filePath);
+        if ($mtime !== false) {
+            return [
+                'date' => date('Y-m-d', $mtime),
+                'time' => date('H:i:s', $mtime),
+            ];
+        }
+
+        return [
+            'date' => date('Y-m-d'),
+            'time' => date('H:i:s'),
+        ];
+    }
+
     public function writeTranscriptToTempFile(string $tempDir, string $key, string $transcript): ?string
     {
         if (!is_dir($tempDir) && !mkdir($tempDir, 0777, true) && !is_dir($tempDir)) {

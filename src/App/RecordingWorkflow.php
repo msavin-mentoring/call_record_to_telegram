@@ -55,13 +55,19 @@ final class RecordingWorkflow
                 continue;
             }
 
+            $recordedAt = $this->files->detectRecordingDateTime($key, $filePath);
+            $durationText = $this->formatDuration($duration);
+
             $clipPath = $this->files->clipTempPath($config->tempDir, $key);
             if (!$videoProcessor->createMiddleClip($filePath, $clipPath, $duration)) {
                 Logger::info('Failed to build clip: ' . $key);
                 continue;
             }
 
-            $caption = 'Новый созвон: ' . basename($filePath) .
+            $caption = "Новый созвон\n" .
+                "дата: {$recordedAt['date']}\n" .
+                "время: {$recordedAt['time']}\n" .
+                "длительность: {$durationText}\n" .
                 "\nВыберите теги кнопками или отправьте их вручную." .
                 "\nПосле выбора нажмите «Готово».";
 
@@ -87,7 +93,7 @@ final class RecordingWorkflow
                 'participants_set' => false,
                 'summary_requested' => null,
                 'prompt_message_id' => (int) ($sent['message_id'] ?? 0),
-                'date' => $this->files->detectRecordingDate($key, $filePath),
+                'date' => $recordedAt['date'],
             ];
             $this->reminders->resetPendingReminder($pending, $config);
 
@@ -268,5 +274,19 @@ final class RecordingWorkflow
 
         $telegram->sendMessage($chatId, 'Сохранено и отправлено: ' . basename($filePath));
         Logger::info('Processed and sent full recording: ' . $key);
+    }
+
+    private function formatDuration(float $durationSeconds): string
+    {
+        $seconds = max(0, (int) round($durationSeconds));
+        $hours = intdiv($seconds, 3600);
+        $minutes = intdiv($seconds % 3600, 60);
+        $remainingSeconds = $seconds % 60;
+
+        if ($hours > 0) {
+            return sprintf('%d:%02d:%02d', $hours, $minutes, $remainingSeconds);
+        }
+
+        return sprintf('%d:%02d', $minutes, $remainingSeconds);
     }
 }
