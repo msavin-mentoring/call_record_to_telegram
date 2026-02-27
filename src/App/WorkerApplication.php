@@ -15,6 +15,7 @@ final class WorkerApplication
     public function run(): void
     {
         $config = Config::fromEnv();
+        Logger::setTimezone($config->reminderTimezone);
         $this->acquireInstanceLock($config->stateFile);
 
         if (!is_dir($config->recordingsDir)) {

@@ -10,6 +10,6 @@ use App\WorkerApplication;
 try {
     (new WorkerApplication())->run();
 } catch (\Throwable $e) {
-    Logger::info('Fatal error: ' . $e->getMessage());
+    Logger::error('Fatal error: ' . $e->getMessage());
     exit(1);
 }
