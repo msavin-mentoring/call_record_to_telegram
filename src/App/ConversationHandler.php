@@ -177,36 +177,30 @@ final class ConversationHandler
 
         if ($stage === 'await_tags') {
             $tags = $this->parser->parseTagsFromText($text);
-            if ($tags === []) {
+            $skipTags = $this->parser->isTagsSkipInput($text);
+            if ($tags === [] && !$skipTags) {
                 $this->reminders->resetPendingReminder($pending, $config);
                 $state->setPending($pending);
                 $state->save();
                 $telegram->sendMessage(
                     $pendingChatId,
-                    'Не удалось распознать теги. Отправьте, например: #мок #резюме или выберите кнопками.'
+                    'Не удалось распознать теги. Отправьте, например: #мок #резюме, выберите кнопками или отправьте "-" для пропуска.'
                 );
                 return;
             }
 
-            $pending['tags'] = $tags;
-            $pending['stage'] = 'await_participants';
-            $pending['participants_set'] = false;
-            $pending['summary_requested'] = null;
-            unset($pending['summary_prompt_message_id']);
-            $this->reminders->resetPendingReminder($pending, $config);
-            $state->setPending($pending);
-            $state->save();
+            if ($skipTags) {
+                $tags = [];
+            }
 
-            $this->sendParticipantsPrompt(
+            $this->moveToParticipantsStep(
                 $pending,
+                $tags,
                 $state,
                 $telegram,
                 $config,
                 $pendingChatId,
-                $this->buildParticipantsPromptText(
-                    $config,
-                    "Теги сохранены: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags))
-                )
+                'Теги сохранены: ' . $this->formatTagsForMessage($tags)
             );
 
             return;
@@ -269,37 +263,27 @@ final class ConversationHandler
 
         $tags = is_array($pending['tags'] ?? null) ? array_values($pending['tags']) : [];
 
-        if ($callbackData === 'tag:done') {
-            if ($tags === []) {
-                if ($callbackId !== '') {
-                    $telegram->answerCallbackQuery($callbackId, 'Выберите хотя бы один тег');
-                }
-                return;
+        if ($callbackData === 'tag:done' || $callbackData === 'tag:skip') {
+            if ($callbackData === 'tag:skip') {
+                $tags = [];
             }
 
-            $pending['stage'] = 'await_participants';
-            $pending['participants_set'] = false;
-            $pending['summary_requested'] = null;
-            unset($pending['summary_prompt_message_id']);
-            $this->reminders->resetPendingReminder($pending, $config);
-            $state->setPending($pending);
-            $state->save();
-
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Теги сохранены');
-            }
-
-            $this->sendParticipantsPrompt(
+            $this->moveToParticipantsStep(
                 $pending,
+                $tags,
                 $state,
                 $telegram,
                 $config,
                 $chatId,
-                $this->buildParticipantsPromptText(
-                    $config,
-                    "Теги: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags))
-                )
+                'Теги: ' . $this->formatTagsForMessage($tags)
             );
+
+            if ($callbackId !== '') {
+                $telegram->answerCallbackQuery(
+                    $callbackId,
+                    $callbackData === 'tag:skip' ? 'Теги пропущены' : 'Теги сохранены'
+                );
+            }
 
             return;
         }
@@ -490,5 +474,45 @@ final class ConversationHandler
         return $header .
             "\nПришлите участников (ники), например: @msavin_dev @asdfasdf" .
             "\nЕсли не хотите указывать, отправьте: -";
+    }
+
+    private function moveToParticipantsStep(
+        array &$pending,
+        array $tags,
+        StateStore $state,
+        TelegramClient $telegram,
+        Config $config,
+        string $chatId,
+        string $header
+    ): void {
+        $pending['tags'] = array_values(array_unique(array_map('strval', $tags)));
+        $pending['stage'] = 'await_participants';
+        $pending['participants_set'] = false;
+        $pending['summary_requested'] = null;
+        unset($pending['summary_prompt_message_id']);
+        $this->reminders->resetPendingReminder($pending, $config);
+        $state->setPending($pending);
+        $state->save();
+
+        $this->sendParticipantsPrompt(
+            $pending,
+            $state,
+            $telegram,
+            $config,
+            $chatId,
+            $this->buildParticipantsPromptText($config, $header)
+        );
+    }
+
+    /**
+     * @param string[] $tags
+     */
+    private function formatTagsForMessage(array $tags): string
+    {
+        if ($tags === []) {
+            return '—';
+        }
+
+        return implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags));
     }
 }

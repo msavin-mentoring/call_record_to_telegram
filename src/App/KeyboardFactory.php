@@ -37,6 +37,7 @@ final class KeyboardFactory
                 ],
                 [
                     ['text' => 'Готово', 'callback_data' => 'tag:done'],
+                    ['text' => 'Без тега', 'callback_data' => 'tag:skip'],
                 ],
             ],
         ];

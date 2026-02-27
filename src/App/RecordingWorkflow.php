@@ -166,7 +166,7 @@ final class RecordingWorkflow
             return;
         }
 
-        if (!array_key_exists('tags', $pending) || !is_array($pending['tags']) || $pending['tags'] === []) {
+        if (!array_key_exists('tags', $pending) || !is_array($pending['tags'])) {
             return;
         }
 

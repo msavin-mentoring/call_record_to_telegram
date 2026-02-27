@@ -91,6 +91,12 @@ final class UserInputParser
         return $value === '-' || $value === 'skip' || $value === 'пропустить';
     }
 
+    public function isTagsSkipInput(string $text): bool
+    {
+        $value = mb_strtolower(trim($text));
+        return $value === '-' || $value === 'skip' || $value === 'пропустить' || $value === 'без тега';
+    }
+
     public function parseYesNoChoice(string $text): ?bool
     {
         $value = mb_strtolower(trim($text));
