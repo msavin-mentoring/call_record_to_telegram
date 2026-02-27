@@ -32,6 +32,7 @@ cp .env.example .env
 2. Заполните в `.env` минимум:
 - `TELEGRAM_BOT_TOKEN`
 - при необходимости `TELEGRAM_CHAT_ID` (если пусто, воркер попробует взять chat id из `getUpdates`)
+- `TELEGRAM_UPLOAD_MAX_BYTES` (опционально, лимит одного отправляемого файла; по умолчанию ~49 MB)
 - `OPENAI_API_KEY` (если хотите транскрипцию и саммари через OpenAI)
 
 3. Запустите:
@@ -64,6 +65,7 @@ RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
 - `RECORDINGS_DIR` — путь внутри контейнера к записям (по умолчанию `/recordings`)
 - `STATE_FILE` — файл состояния обработанных записей
 - `TEMP_DIR` — временная папка под клипы
+- `TELEGRAM_UPLOAD_MAX_BYTES` — целевой лимит одного отправляемого файла; если полный файл больше, воркер автоматически шлет запись частями
 - `POLL_INTERVAL_SECONDS` — интервал сканирования
 - `FILE_MIN_AGE_SECONDS` — минимальный возраст файла перед обработкой
 - `STABILITY_WAIT_SECONDS` — сколько ждать перед повторной проверкой размера

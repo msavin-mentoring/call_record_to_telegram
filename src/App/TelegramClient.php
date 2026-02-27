@@ -11,6 +11,8 @@ use Throwable;
 final class TelegramClient
 {
     private Client $http;
+    private ?int $lastErrorCode = null;
+    private ?string $lastErrorDescription = null;
 
     public function __construct(
         private readonly string $token,
@@ -28,6 +30,16 @@ final class TelegramClient
     public function getChatId(): ?string
     {
         return $this->chatId;
+    }
+
+    public function getLastErrorCode(): ?int
+    {
+        return $this->lastErrorCode;
+    }
+
+    public function getLastErrorDescription(): ?string
+    {
+        return $this->lastErrorDescription;
     }
 
     public function rememberChatId(string $chatId): void
@@ -174,11 +186,23 @@ final class TelegramClient
 
     private function callApi(string $httpMethod, string $method, array $options): ?array
     {
+        $this->lastErrorCode = null;
+        $this->lastErrorDescription = null;
+
         try {
             $response = $this->http->request($httpMethod, $method, $options);
             $decoded = json_decode((string) $response->getBody(), true);
             if (!is_array($decoded) || !($decoded['ok'] ?? false)) {
                 $description = is_array($decoded) ? (string) ($decoded['description'] ?? 'unknown error') : 'invalid JSON response';
+                if (is_array($decoded)) {
+                    $code = $decoded['error_code'] ?? null;
+                    if (is_int($code)) {
+                        $this->lastErrorCode = $code;
+                    } elseif (is_numeric($code)) {
+                        $this->lastErrorCode = (int) $code;
+                    }
+                    $this->lastErrorDescription = $description;
+                }
                 Logger::info("Telegram {$method} returned error: {$description}");
                 return null;
             }
@@ -189,6 +213,20 @@ final class TelegramClient
             $details = '';
             if ($e instanceof RequestException && $e->hasResponse()) {
                 $details = trim((string) $e->getResponse()->getBody());
+                $decoded = json_decode($details, true);
+                if (is_array($decoded)) {
+                    $code = $decoded['error_code'] ?? null;
+                    if (is_int($code)) {
+                        $this->lastErrorCode = $code;
+                    } elseif (is_numeric($code)) {
+                        $this->lastErrorCode = (int) $code;
+                    }
+
+                    $description = $decoded['description'] ?? null;
+                    if (is_string($description) && $description !== '') {
+                        $this->lastErrorDescription = $description;
+                    }
+                }
             }
             Logger::info("Telegram {$method} failed: " . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
             return null;

@@ -52,4 +52,47 @@ final class VideoProcessor
 
         return is_file($outputFile) && ((int) filesize($outputFile)) > 0;
     }
+
+    /**
+     * @return string[]
+     */
+    public function splitIntoSegments(
+        string $sourceFile,
+        string $tempDir,
+        string $segmentPrefix,
+        int $segmentSeconds
+    ): array {
+        if (!is_dir($tempDir) && !mkdir($tempDir, 0777, true) && !is_dir($tempDir)) {
+            return [];
+        }
+
+        $segmentSeconds = max(60, $segmentSeconds);
+        $safePrefix = preg_replace('/[^A-Za-z0-9._-]+/', '_', $segmentPrefix);
+        if (!is_string($safePrefix) || $safePrefix === '') {
+            $safePrefix = 'segment';
+        }
+
+        $pattern = $tempDir . DIRECTORY_SEPARATOR . $safePrefix . '_%03d.mp4';
+        foreach (glob($tempDir . DIRECTORY_SEPARATOR . $safePrefix . '_*.mp4') ?: [] as $oldFile) {
+            @unlink($oldFile);
+        }
+
+        $command = sprintf(
+            'ffmpeg -hide_banner -loglevel error -y -i %s -map 0 -c copy -f segment -segment_time %d -reset_timestamps 1 %s',
+            escapeshellarg($sourceFile),
+            $segmentSeconds,
+            escapeshellarg($pattern)
+        );
+
+        $result = CommandRunner::run($command);
+        if ($result['code'] !== 0) {
+            Logger::info('ffmpeg split failed for ' . $sourceFile . ': ' . trim($result['stderr'] ?: $result['stdout']));
+            return [];
+        }
+
+        $files = glob($tempDir . DIRECTORY_SEPARATOR . $safePrefix . '_*.mp4') ?: [];
+        sort($files);
+
+        return array_values(array_filter($files, static fn(string $path): bool => is_file($path) && ((int) filesize($path)) > 0));
+    }
 }

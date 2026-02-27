@@ -58,7 +58,7 @@ final class WorkerApplication
         while (true) {
             try {
                 $conversation->processUpdates($config, $state, $telegram);
-                $workflow->maybeFinalizePending($config, $state, $telegram, $openAi);
+                $workflow->maybeFinalizePending($config, $state, $telegram, $openAi, $videoProcessor);
                 $reminders->maybeSendPendingReminder($config, $state, $telegram);
 
                 if (time() >= $nextScanAt) {

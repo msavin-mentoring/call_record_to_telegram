@@ -109,7 +109,8 @@ final class RecordingWorkflow
         Config $config,
         StateStore $state,
         TelegramClient $telegram,
-        OpenAiClient $openAi
+        OpenAiClient $openAi,
+        VideoProcessor $videoProcessor
     ): void {
         $pending = $state->getPending();
         if ($pending === null) {
@@ -192,6 +193,8 @@ final class RecordingWorkflow
         $tags = array_values(array_unique(array_map('strval', $pending['tags'])));
         $participants = array_values(array_unique(array_map('strval', $pending['participants'])));
         $date = (string) ($pending['date'] ?? $this->files->detectRecordingDate($key, $filePath));
+        $size = filesize($filePath);
+        $mtime = filemtime($filePath);
 
         $caption = $this->textFormatter->buildFinalCaption($tags, $participants, $date);
 
@@ -200,7 +203,34 @@ final class RecordingWorkflow
             $sent = $telegram->sendDocument($chatId, $filePath, $caption, 'video/mp4');
         }
 
+        $sentByParts = false;
         if ($sent === null) {
+            $telegramErrorCode = $telegram->getLastErrorCode();
+            if ($telegramErrorCode === 413) {
+                $sizeText = $this->formatFileSize($size === false ? 0 : (int) $size);
+                $telegram->sendMessage(
+                    $chatId,
+                    "Полный файл слишком большой для отправки одним сообщением ({$sizeText}). " .
+                    "Пробую отправить частями."
+                );
+                $sentByParts = $this->sendRecordingInParts(
+                    $videoProcessor,
+                    $config,
+                    $telegram,
+                    $chatId,
+                    $filePath,
+                    $caption,
+                    $key
+                );
+                if ($sentByParts) {
+                    Logger::info('Full recording sent in parts after Telegram 413: ' . $key);
+                } else {
+                    Logger::info('Failed to send recording in parts after Telegram 413: ' . $key);
+                }
+            }
+        }
+
+        if ($sent === null && !$sentByParts) {
             Logger::info('Failed to send full recording, waiting for retry message from user.');
             if (!(bool) ($pending['retry_notice_sent'] ?? false)) {
                 $telegram->sendMessage($chatId, 'Не удалось отправить полный файл. Повторю автоматически через минуту.');
@@ -211,9 +241,6 @@ final class RecordingWorkflow
             $state->save();
             return;
         }
-
-        $size = filesize($filePath);
-        $mtime = filemtime($filePath);
 
         $transcript = null;
         $summary = null;
@@ -288,5 +315,109 @@ final class RecordingWorkflow
         }
 
         return sprintf('%d:%02d', $minutes, $remainingSeconds);
+    }
+
+    private function formatFileSize(int $bytes): string
+    {
+        $bytes = max(0, $bytes);
+        if ($bytes < 1024) {
+            return $bytes . ' B';
+        }
+        if ($bytes < 1024 * 1024) {
+            return sprintf('%.1f KB', $bytes / 1024);
+        }
+        if ($bytes < 1024 * 1024 * 1024) {
+            return sprintf('%.1f MB', $bytes / (1024 * 1024));
+        }
+
+        return sprintf('%.2f GB', $bytes / (1024 * 1024 * 1024));
+    }
+
+    private function sendRecordingInParts(
+        VideoProcessor $videoProcessor,
+        Config $config,
+        TelegramClient $telegram,
+        string $chatId,
+        string $filePath,
+        string $caption,
+        string $key
+    ): bool {
+        $size = filesize($filePath);
+        $duration = $videoProcessor->getDuration($filePath);
+        if ($size === false || $duration === null || $duration <= 0.0) {
+            return false;
+        }
+
+        $targetBytes = max(5 * 1024 * 1024, $config->telegramUploadMaxBytes);
+        $segmentSeconds = (int) floor($duration * ($targetBytes / max(1, (int) $size)) * 0.9);
+        $segmentSeconds = max(120, min((int) ceil($duration), $segmentSeconds));
+
+        $notified = false;
+        for ($attempt = 1; $attempt <= 4; $attempt++) {
+            $prefix = substr(sha1($key), 0, 12) . '_full_part_' . $attempt;
+            $parts = $videoProcessor->splitIntoSegments($filePath, $config->tempDir, $prefix, $segmentSeconds);
+            if ($parts === []) {
+                return false;
+            }
+
+            $maxPartSize = 0;
+            foreach ($parts as $partPath) {
+                $partSize = filesize($partPath);
+                if ($partSize !== false) {
+                    $maxPartSize = max($maxPartSize, (int) $partSize);
+                }
+            }
+
+            if ($maxPartSize > (int) ($targetBytes * 1.02)) {
+                $this->cleanupTempFiles($parts);
+                $segmentSeconds = max(60, (int) floor($segmentSeconds * 0.7));
+                continue;
+            }
+
+            if (!$notified) {
+                $telegram->sendMessage(
+                    $chatId,
+                    'Отправляю запись частями: ' . count($parts) . ' шт.'
+                );
+                $notified = true;
+            }
+
+            $allSent = true;
+            $lastErrorCode = null;
+            $total = count($parts);
+            foreach ($parts as $index => $partPath) {
+                $partCaption = $caption . "\nчасть " . ($index + 1) . '/' . $total;
+                $sent = $telegram->sendDocument($chatId, $partPath, $partCaption, 'video/mp4');
+                if ($sent === null) {
+                    $allSent = false;
+                    $lastErrorCode = $telegram->getLastErrorCode();
+                    break;
+                }
+            }
+
+            $this->cleanupTempFiles($parts);
+            if ($allSent) {
+                return true;
+            }
+
+            if ($lastErrorCode === 413) {
+                $segmentSeconds = max(60, (int) floor($segmentSeconds * 0.6));
+                continue;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param string[] $paths
+     */
+    private function cleanupTempFiles(array $paths): void
+    {
+        foreach ($paths as $path) {
+            @unlink($path);
+        }
     }
 }
