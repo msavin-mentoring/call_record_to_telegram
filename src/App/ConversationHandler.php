@@ -99,6 +99,28 @@ final class ConversationHandler
                 if (str_starts_with($callbackData, 'tag:')) {
                     $this->handleTagCallback($callbackData, $callbackId, $pending, $state, $telegram, $config);
                 }
+            } elseif ($stage === 'await_participants') {
+                $participantsPromptMessageId = (int) ($pending['participants_prompt_message_id'] ?? 0);
+                if ($participantsPromptMessageId > 0 && $messageId !== $participantsPromptMessageId) {
+                    if ($callbackId !== '') {
+                        $telegram->answerCallbackQuery($callbackId, 'Эта кнопка уже неактуальна');
+                    }
+                    return;
+                }
+
+                if (str_starts_with($callbackData, 'participant:')) {
+                    $this->handleParticipantCallback(
+                        $callbackData,
+                        $callbackId,
+                        $pending,
+                        $state,
+                        $telegram,
+                        $config,
+                        $openAiEnabled
+                    );
+                } elseif ($callbackId !== '') {
+                    $telegram->answerCallbackQuery($callbackId, 'Используйте кнопки участников');
+                }
             } elseif ($stage === 'await_summary_choice') {
                 $summaryPromptMessageId = (int) ($pending['summary_prompt_message_id'] ?? 0);
                 if ($messageId !== $summaryPromptMessageId) {
@@ -175,16 +197,17 @@ final class ConversationHandler
             $state->setPending($pending);
             $state->save();
 
-            $participantsPrompt = $telegram->sendMessage(
+            $this->sendParticipantsPrompt(
+                $pending,
+                $state,
+                $telegram,
+                $config,
                 $pendingChatId,
-                "Теги сохранены: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags)) .
-                "\nТеперь пришлите участников (ники), например: @msavin_dev @asdfasdf\nЕсли не хотите указывать, отправьте: -"
+                $this->buildParticipantsPromptText(
+                    $config,
+                    "Теги сохранены: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags))
+                )
             );
-            if ($participantsPrompt !== null) {
-                $pending['participants_prompt_message_id'] = (int) ($participantsPrompt['message_id'] ?? 0);
-                $state->setPending($pending);
-                $state->save();
-            }
 
             return;
         }
@@ -198,7 +221,7 @@ final class ConversationHandler
                 $state->save();
                 $telegram->sendMessage(
                     $pendingChatId,
-                    'Не удалось распознать ники. Пришлите в формате: @user1 @user2 или отправьте "-" для пропуска.'
+                    'Не удалось распознать ники. Пришлите в формате: @user1 @user2, выберите кнопками или отправьте "-" для пропуска.'
                 );
                 return;
             }
@@ -206,31 +229,7 @@ final class ConversationHandler
             $pending['participants'] = $participants;
             $pending['participants_set'] = true;
             unset($pending['next_retry_at'], $pending['retry_notice_sent']);
-
-            if ($openAiEnabled) {
-                $summaryPrompt = $telegram->sendMessage(
-                    $pendingChatId,
-                    'Нужно сделать саммари по созвону?',
-                    $this->keyboards->buildSummaryChoiceKeyboard()
-                );
-                $pending['stage'] = 'await_summary_choice';
-                $pending['summary_requested'] = null;
-                if ($summaryPrompt !== null) {
-                    $pending['summary_prompt_message_id'] = (int) ($summaryPrompt['message_id'] ?? 0);
-                    $this->reminders->resetPendingReminder($pending, $config);
-                } else {
-                    $pending['summary_requested'] = false;
-                    $pending['stage'] = 'ready_finalize';
-                    $this->reminders->clearPendingReminder($pending);
-                }
-            } else {
-                $pending['summary_requested'] = false;
-                $pending['stage'] = 'ready_finalize';
-                $this->reminders->clearPendingReminder($pending);
-            }
-
-            $state->setPending($pending);
-            $state->save();
+            $this->finalizeParticipantsStep($pending, $pendingChatId, $state, $telegram, $config, $openAiEnabled);
             return;
         }
 
@@ -290,16 +289,17 @@ final class ConversationHandler
                 $telegram->answerCallbackQuery($callbackId, 'Теги сохранены');
             }
 
-            $participantsPrompt = $telegram->sendMessage(
+            $this->sendParticipantsPrompt(
+                $pending,
+                $state,
+                $telegram,
+                $config,
                 $chatId,
-                "Теги: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags)) .
-                "\nПришлите участников (ники), например: @msavin_dev @asdfasdf\nЕсли не хотите указывать, отправьте: -"
+                $this->buildParticipantsPromptText(
+                    $config,
+                    "Теги: " . implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags))
+                )
             );
-            if ($participantsPrompt !== null) {
-                $pending['participants_prompt_message_id'] = (int) ($participantsPrompt['message_id'] ?? 0);
-                $state->setPending($pending);
-                $state->save();
-            }
 
             return;
         }
@@ -338,5 +338,157 @@ final class ConversationHandler
         if ($messageId > 0) {
             $telegram->editMessageReplyMarkup($chatId, $messageId, $this->keyboards->buildTagsKeyboard($newTags));
         }
+    }
+
+    private function handleParticipantCallback(
+        string $callbackData,
+        string $callbackId,
+        array $pending,
+        StateStore $state,
+        TelegramClient $telegram,
+        Config $config,
+        bool $openAiEnabled
+    ): void {
+        $chatId = (string) ($pending['chat_id'] ?? '');
+        if ($chatId === '') {
+            return;
+        }
+
+        $participants = is_array($pending['participants'] ?? null) ? array_values(array_unique($pending['participants'])) : [];
+
+        if ($callbackData === 'participant:skip') {
+            $pending['participants'] = [];
+            $pending['participants_set'] = true;
+            unset($pending['next_retry_at'], $pending['retry_notice_sent']);
+            $this->finalizeParticipantsStep($pending, $chatId, $state, $telegram, $config, $openAiEnabled);
+            if ($callbackId !== '') {
+                $telegram->answerCallbackQuery($callbackId, 'Участники пропущены');
+            }
+            return;
+        }
+
+        if ($callbackData === 'participant:done') {
+            $pending['participants'] = $participants;
+            $pending['participants_set'] = true;
+            unset($pending['next_retry_at'], $pending['retry_notice_sent']);
+            $this->finalizeParticipantsStep($pending, $chatId, $state, $telegram, $config, $openAiEnabled);
+            if ($callbackId !== '') {
+                $telegram->answerCallbackQuery($callbackId, 'Участники сохранены');
+            }
+            return;
+        }
+
+        if (!str_starts_with($callbackData, 'participant:toggle:')) {
+            if ($callbackId !== '') {
+                $telegram->answerCallbackQuery($callbackId, 'Неизвестное действие');
+            }
+            return;
+        }
+
+        $username = trim(substr($callbackData, strlen('participant:toggle:')));
+        if ($username === '' || preg_match('/^@[A-Za-z0-9_]{3,32}$/', $username) !== 1) {
+            if ($callbackId !== '') {
+                $telegram->answerCallbackQuery($callbackId, 'Некорректный ник');
+            }
+            return;
+        }
+
+        $set = array_fill_keys($participants, true);
+        if (isset($set[$username])) {
+            unset($set[$username]);
+            if ($callbackId !== '') {
+                $telegram->answerCallbackQuery($callbackId, 'Убрано: ' . $username);
+            }
+        } else {
+            $set[$username] = true;
+            if ($callbackId !== '') {
+                $telegram->answerCallbackQuery($callbackId, 'Добавлено: ' . $username);
+            }
+        }
+
+        $participants = array_keys($set);
+        sort($participants);
+        $pending['participants'] = $participants;
+        $pending['participants_set'] = false;
+        $this->reminders->resetPendingReminder($pending, $config);
+        $state->setPending($pending);
+        $state->save();
+
+        $messageId = (int) ($pending['participants_prompt_message_id'] ?? 0);
+        if ($messageId > 0) {
+            $telegram->editMessageReplyMarkup(
+                $chatId,
+                $messageId,
+                $this->keyboards->buildParticipantsKeyboard($config->telegramParticipantPresets, $participants)
+            );
+        }
+    }
+
+    private function sendParticipantsPrompt(
+        array &$pending,
+        StateStore $state,
+        TelegramClient $telegram,
+        Config $config,
+        string $chatId,
+        string $text
+    ): void {
+        $selected = is_array($pending['participants'] ?? null) ? array_values(array_unique($pending['participants'])) : [];
+        $replyMarkup = $config->telegramParticipantPresets === []
+            ? null
+            : $this->keyboards->buildParticipantsKeyboard($config->telegramParticipantPresets, $selected);
+
+        $participantsPrompt = $telegram->sendMessage($chatId, $text, $replyMarkup);
+        if ($participantsPrompt !== null) {
+            $pending['participants_prompt_message_id'] = (int) ($participantsPrompt['message_id'] ?? 0);
+            $state->setPending($pending);
+            $state->save();
+        }
+    }
+
+    private function finalizeParticipantsStep(
+        array &$pending,
+        string $chatId,
+        StateStore $state,
+        TelegramClient $telegram,
+        Config $config,
+        bool $openAiEnabled
+    ): void {
+        if ($openAiEnabled) {
+            $summaryPrompt = $telegram->sendMessage(
+                $chatId,
+                'Нужно сделать саммари по созвону?',
+                $this->keyboards->buildSummaryChoiceKeyboard()
+            );
+            $pending['stage'] = 'await_summary_choice';
+            $pending['summary_requested'] = null;
+            if ($summaryPrompt !== null) {
+                $pending['summary_prompt_message_id'] = (int) ($summaryPrompt['message_id'] ?? 0);
+                $this->reminders->resetPendingReminder($pending, $config);
+            } else {
+                $pending['summary_requested'] = false;
+                $pending['stage'] = 'ready_finalize';
+                $this->reminders->clearPendingReminder($pending);
+            }
+        } else {
+            $pending['summary_requested'] = false;
+            $pending['stage'] = 'ready_finalize';
+            $this->reminders->clearPendingReminder($pending);
+        }
+
+        $state->setPending($pending);
+        $state->save();
+    }
+
+    private function buildParticipantsPromptText(Config $config, string $header): string
+    {
+        if ($config->telegramParticipantPresets !== []) {
+            return $header .
+                "\nВыберите участников кнопками ниже или пришлите вручную (например: @msavin_dev @asdfasdf)." .
+                "\nЕсли не хотите указывать, отправьте: -";
+        }
+
+        return $header .
+            "\nПришлите участников (ники), например: @msavin_dev @asdfasdf" .
+            "\nЕсли не хотите указывать, отправьте: -";
     }
 }

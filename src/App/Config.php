@@ -15,6 +15,8 @@ final class Config
         public readonly string $tempDir,
         public readonly string $telegramToken,
         public readonly ?string $telegramChatId,
+        /** @var string[] */
+        public readonly array $telegramParticipantPresets,
         public readonly int $telegramUploadMaxBytes,
         public readonly int $pollIntervalSeconds,
         public readonly int $fileMinAgeSeconds,
@@ -47,6 +49,7 @@ final class Config
             tempDir: rtrim((string) getenv('TEMP_DIR') ?: '/tmp/call_clips', '/'),
             telegramToken: self::requiredEnv('TELEGRAM_BOT_TOKEN'),
             telegramChatId: self::nullableEnv('TELEGRAM_CHAT_ID'),
+            telegramParticipantPresets: self::participantPresetsEnv('TELEGRAM_PARTICIPANT_PRESETS'),
             telegramUploadMaxBytes: self::intEnv('TELEGRAM_UPLOAD_MAX_BYTES', 49 * 1024 * 1024),
             pollIntervalSeconds: self::intEnv('POLL_INTERVAL_SECONDS', 30),
             fileMinAgeSeconds: self::intEnv('FILE_MIN_AGE_SECONDS', 60),
@@ -155,5 +158,37 @@ final class Config
     {
         $hour = self::intEnv($name, $default);
         return max(0, min(23, $hour));
+    }
+
+    /**
+     * @return string[]
+     */
+    private static function participantPresetsEnv(string $name): array
+    {
+        $value = getenv($name);
+        if ($value === false || trim((string) $value) === '') {
+            return [];
+        }
+
+        $tokens = preg_split('/[\s,;]+/', (string) $value) ?: [];
+        $result = [];
+        foreach ($tokens as $token) {
+            $username = trim((string) $token);
+            if ($username === '') {
+                continue;
+            }
+
+            if (!str_starts_with($username, '@')) {
+                $username = '@' . $username;
+            }
+
+            if (preg_match('/^@[A-Za-z0-9_]{3,32}$/', $username) !== 1) {
+                continue;
+            }
+
+            $result[] = $username;
+        }
+
+        return array_values(array_unique($result));
     }
 }
