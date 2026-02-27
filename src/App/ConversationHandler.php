@@ -86,47 +86,39 @@ final class ConversationHandler
             $callbackId = (string) ($callback['id'] ?? '');
             $callbackData = (string) ($callback['data'] ?? '');
             $messageId = (int) ($callback['message']['message_id'] ?? 0);
+            if ($callbackId !== '') {
+                // Ack callback immediately to avoid Telegram client spinner/timeouts.
+                $telegram->answerCallbackQuery($callbackId);
+            }
 
             if ($stage === 'await_tags') {
                 $promptMessageId = (int) ($pending['prompt_message_id'] ?? 0);
                 if ($messageId !== $promptMessageId) {
-                    if ($callbackId !== '') {
-                        $telegram->answerCallbackQuery($callbackId, 'Эта кнопка уже неактуальна');
-                    }
                     return;
                 }
 
                 if (str_starts_with($callbackData, 'tag:')) {
-                    $this->handleTagCallback($callbackData, $callbackId, $pending, $state, $telegram, $config);
+                    $this->handleTagCallback($callbackData, $pending, $state, $telegram, $config);
                 }
             } elseif ($stage === 'await_participants') {
                 $participantsPromptMessageId = (int) ($pending['participants_prompt_message_id'] ?? 0);
                 if ($participantsPromptMessageId > 0 && $messageId !== $participantsPromptMessageId) {
-                    if ($callbackId !== '') {
-                        $telegram->answerCallbackQuery($callbackId, 'Эта кнопка уже неактуальна');
-                    }
                     return;
                 }
 
                 if (str_starts_with($callbackData, 'participant:')) {
                     $this->handleParticipantCallback(
                         $callbackData,
-                        $callbackId,
                         $pending,
                         $state,
                         $telegram,
                         $config,
-                        $openAiEnabled
-                    );
-                } elseif ($callbackId !== '') {
-                    $telegram->answerCallbackQuery($callbackId, 'Используйте кнопки участников');
+                    $openAiEnabled
+                );
                 }
             } elseif ($stage === 'await_summary_choice') {
                 $summaryPromptMessageId = (int) ($pending['summary_prompt_message_id'] ?? 0);
                 if ($messageId !== $summaryPromptMessageId) {
-                    if ($callbackId !== '') {
-                        $telegram->answerCallbackQuery($callbackId, 'Эта кнопка уже неактуальна');
-                    }
                     return;
                 }
 
@@ -137,16 +129,6 @@ final class ConversationHandler
                     $this->reminders->clearPendingReminder($pending);
                     $state->setPending($pending);
                     $state->save();
-
-                    if ($callbackId !== '') {
-                        $telegram->answerCallbackQuery($callbackId, $choice ? 'Сделаем саммари' : 'Саммари пропускаем');
-                    }
-                } elseif ($callbackId !== '') {
-                    $telegram->answerCallbackQuery($callbackId, 'Выберите Да или Нет');
-                }
-            } else {
-                if ($callbackId !== '') {
-                    $telegram->answerCallbackQuery($callbackId, 'Отправьте участников текстом');
                 }
             }
 
@@ -250,7 +232,6 @@ final class ConversationHandler
 
     private function handleTagCallback(
         string $callbackData,
-        string $callbackId,
         array $pending,
         StateStore $state,
         TelegramClient $telegram,
@@ -278,36 +259,20 @@ final class ConversationHandler
                 'Теги: ' . $this->formatTagsForMessage($tags)
             );
 
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery(
-                    $callbackId,
-                    $callbackData === 'tag:skip' ? 'Теги пропущены' : 'Теги сохранены'
-                );
-            }
-
             return;
         }
 
         $slug = substr($callbackData, 4);
         $mappedTag = $this->keyboards->mapTagSlug($slug);
         if ($mappedTag === null) {
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Неизвестный тег');
-            }
             return;
         }
 
         $set = array_fill_keys($tags, true);
         if (isset($set[$mappedTag])) {
             unset($set[$mappedTag]);
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Удалено: #' . $mappedTag);
-            }
         } else {
             $set[$mappedTag] = true;
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Добавлено: #' . $mappedTag);
-            }
         }
 
         $newTags = array_keys($set);
@@ -326,7 +291,6 @@ final class ConversationHandler
 
     private function handleParticipantCallback(
         string $callbackData,
-        string $callbackId,
         array $pending,
         StateStore $state,
         TelegramClient $telegram,
@@ -345,9 +309,6 @@ final class ConversationHandler
             $pending['participants_set'] = true;
             unset($pending['next_retry_at'], $pending['retry_notice_sent']);
             $this->finalizeParticipantsStep($pending, $chatId, $state, $telegram, $config, $openAiEnabled);
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Участники пропущены');
-            }
             return;
         }
 
@@ -356,38 +317,23 @@ final class ConversationHandler
             $pending['participants_set'] = true;
             unset($pending['next_retry_at'], $pending['retry_notice_sent']);
             $this->finalizeParticipantsStep($pending, $chatId, $state, $telegram, $config, $openAiEnabled);
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Участники сохранены');
-            }
             return;
         }
 
         if (!str_starts_with($callbackData, 'participant:toggle:')) {
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Неизвестное действие');
-            }
             return;
         }
 
         $username = trim(substr($callbackData, strlen('participant:toggle:')));
         if ($username === '' || preg_match('/^@[A-Za-z0-9_]{3,32}$/', $username) !== 1) {
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Некорректный ник');
-            }
             return;
         }
 
         $set = array_fill_keys($participants, true);
         if (isset($set[$username])) {
             unset($set[$username]);
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Убрано: ' . $username);
-            }
         } else {
             $set[$username] = true;
-            if ($callbackId !== '') {
-                $telegram->answerCallbackQuery($callbackId, 'Добавлено: ' . $username);
-            }
         }
 
         $participants = array_keys($set);

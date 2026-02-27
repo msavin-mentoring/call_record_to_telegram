@@ -205,6 +205,11 @@ final class TelegramClient
                     }
                     $this->lastErrorDescription = $description;
                 }
+
+                if ($this->isIgnorableAnswerCallbackQueryError($method, $description)) {
+                    return [];
+                }
+
                 Logger::info("Telegram {$method} returned error: {$description}");
                 return null;
             }
@@ -230,8 +235,25 @@ final class TelegramClient
                     }
                 }
             }
+
+            if ($this->isIgnorableAnswerCallbackQueryError($method, $this->lastErrorDescription ?? '')) {
+                return [];
+            }
+
             Logger::info("Telegram {$method} failed: " . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
             return null;
         }
+    }
+
+    private function isIgnorableAnswerCallbackQueryError(string $method, string $description): bool
+    {
+        if ($method !== 'answerCallbackQuery') {
+            return false;
+        }
+
+        $description = mb_strtolower(trim($description));
+        return str_contains($description, 'query is too old')
+            || str_contains($description, 'query id is invalid')
+            || str_contains($description, 'query timeout expired');
     }
 }
