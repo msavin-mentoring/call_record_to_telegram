@@ -17,10 +17,12 @@ final class TelegramClient
     public function __construct(
         private readonly string $token,
         private ?string $chatId,
+        string $apiBaseUrl = 'https://api.telegram.org',
         ?Client $http = null,
     ) {
+        $normalizedBaseUrl = rtrim($apiBaseUrl, '/');
         $this->http = $http ?? new Client([
-            'base_uri' => 'https://api.telegram.org/bot' . $this->token . '/',
+            'base_uri' => $normalizedBaseUrl . '/bot' . $this->token . '/',
             'timeout' => 60,
             'connect_timeout' => 10,
             'http_errors' => true,

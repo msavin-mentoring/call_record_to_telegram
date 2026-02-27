@@ -9,3 +9,22 @@ services:
       - ${RECORDINGS_HOST_PATH:-/root/.jitsi-meet-cfg/jibri/recordings}:/recordings:ro
       - ./data:/app/data
       - ./src:/app/src
+
+  bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: telegram-bot-api
+    restart: unless-stopped
+    profiles:
+      - local-bot-api
+    env_file:
+      - .env
+    command:
+      - --api-id=${TELEGRAM_API_ID}
+      - --api-hash=${TELEGRAM_API_HASH}
+      - --local
+      - --http-port=8081
+      - --dir=/var/lib/telegram-bot-api
+      - --temp-dir=/var/lib/telegram-bot-api/tmp
+      - --verbosity=1
+    volumes:
+      - ./data/telegram-bot-api:/var/lib/telegram-bot-api
