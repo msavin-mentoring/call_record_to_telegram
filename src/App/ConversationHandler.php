@@ -85,9 +85,19 @@ final class ConversationHandler
 
         $callback = $update['callback_query'] ?? null;
         if (is_array($callback)) {
+            $updateId = (int) ($update['update_id'] ?? 0);
             $callbackId = (string) ($callback['id'] ?? '');
             $callbackData = (string) ($callback['data'] ?? '');
             $messageId = (int) ($callback['message']['message_id'] ?? 0);
+            Logger::info('DBG callback received', [
+                'update_id' => $updateId,
+                'stage' => $stage,
+                'callback_data' => $callbackData,
+                'callback_message_id' => $messageId,
+                'prompt_message_id' => (int) ($pending['prompt_message_id'] ?? 0),
+                'participants_prompt_message_id' => (int) ($pending['participants_prompt_message_id'] ?? 0),
+                'summary_prompt_message_id' => (int) ($pending['summary_prompt_message_id'] ?? 0),
+            ]);
             if ($callbackId !== '') {
                 // Ack callback immediately to avoid Telegram client spinner/timeouts.
                 $telegram->answerCallbackQuery($callbackId);
@@ -96,6 +106,11 @@ final class ConversationHandler
             if ($stage === 'await_tags') {
                 $promptMessageId = (int) ($pending['prompt_message_id'] ?? 0);
                 if ($messageId !== $promptMessageId) {
+                    Logger::info('DBG callback ignored: tags prompt message mismatch', [
+                        'callback_message_id' => $messageId,
+                        'expected_message_id' => $promptMessageId,
+                        'callback_data' => $callbackData,
+                    ]);
                     return;
                 }
 
@@ -105,6 +120,11 @@ final class ConversationHandler
             } elseif ($stage === 'await_participants') {
                 $participantsPromptMessageId = (int) ($pending['participants_prompt_message_id'] ?? 0);
                 if ($participantsPromptMessageId > 0 && $messageId !== $participantsPromptMessageId) {
+                    Logger::info('DBG callback ignored: participants prompt message mismatch', [
+                        'callback_message_id' => $messageId,
+                        'expected_message_id' => $participantsPromptMessageId,
+                        'callback_data' => $callbackData,
+                    ]);
                     return;
                 }
 
@@ -121,6 +141,11 @@ final class ConversationHandler
             } elseif ($stage === 'await_summary_choice') {
                 $summaryPromptMessageId = (int) ($pending['summary_prompt_message_id'] ?? 0);
                 if ($messageId !== $summaryPromptMessageId) {
+                    Logger::info('DBG callback ignored: summary prompt message mismatch', [
+                        'callback_message_id' => $messageId,
+                        'expected_message_id' => $summaryPromptMessageId,
+                        'callback_data' => $callbackData,
+                    ]);
                     return;
                 }
 
@@ -158,6 +183,10 @@ final class ConversationHandler
                     $this->reminders->clearPendingReminder($pending);
                     $state->setPending($pending);
                     $state->save();
+                    Logger::info('DBG summary choice saved', [
+                        'choice' => $choice ? 'yes' : 'no',
+                        'stage' => 'ready_finalize',
+                    ]);
                 }
             }
 
@@ -338,6 +367,10 @@ final class ConversationHandler
         }
 
         $tags = is_array($pending['tags'] ?? null) ? array_values($pending['tags']) : [];
+        Logger::info('DBG tag callback start', [
+            'callback_data' => $callbackData,
+            'current_tags' => $tags,
+        ]);
 
         if ($callbackData === 'tag:restart') {
             $this->moveToTagsStep(
@@ -373,10 +406,14 @@ final class ConversationHandler
         $slug = substr($callbackData, 4);
         $mappedTag = $this->keyboards->mapTagSlug($slug);
         if ($mappedTag === null) {
+            Logger::info('DBG tag callback ignored: unknown slug', ['slug' => $slug]);
             return;
         }
         $toggleAction = 'tag:' . $mappedTag;
         if ($this->isRapidDuplicateToggle($pending, $toggleAction)) {
+            Logger::info('DBG tag callback ignored: duplicate debounce', [
+                'action' => $toggleAction,
+            ]);
             return;
         }
 
@@ -392,9 +429,22 @@ final class ConversationHandler
         $pending['tags'] = $newTags;
         $this->rememberToggleAction($pending, $toggleAction);
         $this->reminders->resetPendingReminder($pending, $config);
+        Logger::info('DBG tags selection updated', [
+            'toggle_action' => $toggleAction,
+            'new_tags' => $newTags,
+        ]);
 
         $messageId = (int) ($pending['prompt_message_id'] ?? 0);
         $retryAt = (int) ($pending['tags_markup_retry_at'] ?? 0);
+        if ($messageId <= 0) {
+            Logger::info('DBG tags markup edit skipped: empty prompt message id');
+        }
+        if ($messageId > 0 && time() < $retryAt) {
+            Logger::info('DBG tags markup edit postponed by retry cooldown', [
+                'retry_at' => $retryAt,
+                'retry_in_seconds' => max(0, $retryAt - time()),
+            ]);
+        }
         if ($messageId > 0 && time() >= $retryAt) {
             $updated = $telegram->editMessageReplyMarkup(
                 $chatId,
@@ -403,6 +453,10 @@ final class ConversationHandler
             );
             if ($updated) {
                 unset($pending['tags_markup_retry_at']);
+                Logger::info('DBG tags markup edited successfully', [
+                    'message_id' => $messageId,
+                    'selected_tags' => $newTags,
+                ]);
             } elseif ($telegram->getLastErrorCode() === 429) {
                 $retryAfter = max(1, $telegram->getLastRetryAfterSeconds() ?? 1);
                 $pending['tags_markup_retry_at'] = time() + $retryAfter;
@@ -410,6 +464,11 @@ final class ConversationHandler
                     'Rate limited while updating tags keyboard, deferring markup refresh.',
                     ['retry_after' => $retryAfter]
                 );
+            } else {
+                Logger::warning('DBG tags markup edit failed', [
+                    'error_code' => $telegram->getLastErrorCode(),
+                    'error_description' => $telegram->getLastErrorDescription(),
+                ]);
             }
         }
 
@@ -429,6 +488,11 @@ final class ConversationHandler
         if ($chatId === '') {
             return;
         }
+        Logger::info('DBG participant callback start', [
+            'callback_data' => $callbackData,
+            'current_stage' => (string) ($pending['stage'] ?? ''),
+            'current_participants' => is_array($pending['participants'] ?? null) ? array_values(array_unique($pending['participants'])) : [],
+        ]);
 
         if ($callbackData === 'participant:back') {
             $this->moveToTagsStep(
@@ -480,10 +544,17 @@ final class ConversationHandler
 
         $username = trim(substr($callbackData, strlen('participant:toggle:')));
         if ($username === '' || preg_match('/^@[A-Za-z0-9_]{3,32}$/', $username) !== 1) {
+            Logger::info('DBG participant callback ignored: invalid username in payload', [
+                'username' => $username,
+                'callback_data' => $callbackData,
+            ]);
             return;
         }
         $toggleAction = 'participant:' . $username;
         if ($this->isRapidDuplicateToggle($pending, $toggleAction)) {
+            Logger::info('DBG participant callback ignored: duplicate debounce', [
+                'action' => $toggleAction,
+            ]);
             return;
         }
 
@@ -500,9 +571,22 @@ final class ConversationHandler
         $pending['participants_set'] = false;
         $this->rememberToggleAction($pending, $toggleAction);
         $this->reminders->resetPendingReminder($pending, $config);
+        Logger::info('DBG participants selection updated', [
+            'toggle_action' => $toggleAction,
+            'new_participants' => $participants,
+        ]);
 
         $messageId = (int) ($pending['participants_prompt_message_id'] ?? 0);
         $retryAt = (int) ($pending['participants_markup_retry_at'] ?? 0);
+        if ($messageId <= 0) {
+            Logger::info('DBG participants markup edit skipped: empty participants prompt message id');
+        }
+        if ($messageId > 0 && time() < $retryAt) {
+            Logger::info('DBG participants markup edit postponed by retry cooldown', [
+                'retry_at' => $retryAt,
+                'retry_in_seconds' => max(0, $retryAt - time()),
+            ]);
+        }
         if ($messageId > 0 && time() >= $retryAt) {
             $updated = $telegram->editMessageReplyMarkup(
                 $chatId,
@@ -511,6 +595,10 @@ final class ConversationHandler
             );
             if ($updated) {
                 unset($pending['participants_markup_retry_at']);
+                Logger::info('DBG participants markup edited successfully', [
+                    'message_id' => $messageId,
+                    'selected_participants' => $participants,
+                ]);
             } elseif ($telegram->getLastErrorCode() === 429) {
                 $retryAfter = max(1, $telegram->getLastRetryAfterSeconds() ?? 1);
                 $pending['participants_markup_retry_at'] = time() + $retryAfter;
@@ -518,6 +606,11 @@ final class ConversationHandler
                     'Rate limited while updating participants keyboard, deferring markup refresh.',
                     ['retry_after' => $retryAfter]
                 );
+            } else {
+                Logger::warning('DBG participants markup edit failed', [
+                    'error_code' => $telegram->getLastErrorCode(),
+                    'error_description' => $telegram->getLastErrorDescription(),
+                ]);
             }
         }
 
@@ -538,6 +631,12 @@ final class ConversationHandler
             $pending['prompt_message_id'] = (int) ($tagsPrompt['message_id'] ?? 0);
             $state->setPending($pending);
             $state->save();
+            Logger::info('DBG tags prompt sent', [
+                'message_id' => (int) ($pending['prompt_message_id'] ?? 0),
+                'selected_tags' => $selected,
+            ]);
+        } else {
+            Logger::warning('DBG tags prompt send failed');
         }
     }
 
@@ -559,6 +658,12 @@ final class ConversationHandler
             $pending['participants_prompt_message_id'] = (int) ($participantsPrompt['message_id'] ?? 0);
             $state->setPending($pending);
             $state->save();
+            Logger::info('DBG participants prompt sent', [
+                'message_id' => (int) ($pending['participants_prompt_message_id'] ?? 0),
+                'selected_participants' => $selected,
+            ]);
+        } else {
+            Logger::warning('DBG participants prompt send failed');
         }
     }
 
@@ -646,6 +751,10 @@ final class ConversationHandler
         $this->reminders->resetPendingReminder($pending, $config);
         $state->setPending($pending);
         $state->save();
+        Logger::info('DBG transition to participants step', [
+            'tags' => $pending['tags'],
+            'header' => $header,
+        ]);
 
         $this->sendParticipantsPrompt(
             $pending,
@@ -690,6 +799,12 @@ final class ConversationHandler
         $this->reminders->resetPendingReminder($pending, $config);
         $state->setPending($pending);
         $state->save();
+        Logger::info('DBG transition to tags step', [
+            'reset_selection' => $resetSelection,
+            'tags' => $pending['tags'],
+            'participants' => $pending['participants'],
+            'header' => $header,
+        ]);
 
         $this->sendTagsPrompt(
             $pending,
