@@ -19,6 +19,7 @@
   },
   "scripts": {
     "phpstan": "phpstan analyse -c phpstan.neon --memory-limit=1G",
+    "phpmd": "phpmd src text cleancode,codesize,controversial,design,naming,unusedcode",
     "rector": "rector process -c rector.php",
     "rector:dry-run": "rector process -c rector.php --dry-run"
   }
