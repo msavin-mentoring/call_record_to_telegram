@@ -199,24 +199,9 @@ final class RecordingWorkflow
 
         $caption = $this->textFormatter->buildFinalCaption($tags, $participants, $date);
 
-        $uploadFilePath = $filePath;
-        $remuxFilePath = $this->buildFaststartTempPath(
-            $config->tempDir,
-            $key,
-            $size === false ? 0 : (int) $size,
-            $mtime === false ? 0 : (int) $mtime
-        );
-        if ($videoProcessor->remuxForTelegramUpload($filePath, $remuxFilePath)) {
-            $uploadFilePath = $remuxFilePath;
-            Logger::info('Prepared faststart remux for upload: ' . $key);
-        } else {
-            @unlink($remuxFilePath);
-            Logger::info('Faststart remux failed, using original file for upload: ' . $key);
-        }
-
-        $sent = $telegram->sendVideo($chatId, $uploadFilePath, $caption);
+        $sent = $telegram->sendVideo($chatId, $filePath, $caption);
         if ($sent === null) {
-            $sent = $telegram->sendDocument($chatId, $uploadFilePath, $caption, 'video/mp4');
+            $sent = $telegram->sendDocument($chatId, $filePath, $caption, 'video/mp4');
         }
 
         $sentByParts = false;
@@ -234,7 +219,7 @@ final class RecordingWorkflow
                     $config,
                     $telegram,
                     $chatId,
-                    $uploadFilePath,
+                    $filePath,
                     $caption,
                     $key
                 );
@@ -247,9 +232,6 @@ final class RecordingWorkflow
         }
 
         if ($sent === null && !$sentByParts) {
-            if ($uploadFilePath !== $filePath) {
-                @unlink($uploadFilePath);
-            }
             Logger::info('Failed to send full recording, waiting for retry message from user.');
             if (!(bool) ($pending['retry_notice_sent'] ?? false)) {
                 $telegram->sendMessage($chatId, 'Не удалось отправить полный файл. Повторю автоматически через минуту.');
@@ -259,10 +241,6 @@ final class RecordingWorkflow
             $state->setPending($pending);
             $state->save();
             return;
-        }
-
-        if ($uploadFilePath !== $filePath) {
-            @unlink($uploadFilePath);
         }
 
         $transcript = null;
@@ -443,11 +421,5 @@ final class RecordingWorkflow
         foreach ($paths as $path) {
             @unlink($path);
         }
-    }
-
-    private function buildFaststartTempPath(string $tempDir, string $key, int $size, int $mtime): string
-    {
-        $hash = substr(sha1($key . '|' . $size . '|' . $mtime), 0, 16);
-        return $tempDir . DIRECTORY_SEPARATOR . 'upload_faststart_' . $hash . '.mp4';
     }
 }
