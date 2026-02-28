@@ -39,6 +39,9 @@ final class KeyboardFactory
                     ['text' => 'Готово', 'callback_data' => 'tag:done'],
                     ['text' => 'Без тега', 'callback_data' => 'tag:skip'],
                 ],
+                [
+                    ['text' => 'Сначала', 'callback_data' => 'tag:restart'],
+                ],
             ],
         ];
     }
@@ -53,6 +56,10 @@ final class KeyboardFactory
                 [
                     ['text' => 'Да', 'callback_data' => 'summary:yes'],
                     ['text' => 'Нет', 'callback_data' => 'summary:no'],
+                ],
+                [
+                    ['text' => 'Назад', 'callback_data' => 'summary:back'],
+                    ['text' => 'Сначала', 'callback_data' => 'summary:restart'],
                 ],
             ],
         ];
@@ -108,6 +115,10 @@ final class KeyboardFactory
         $rows[] = [
             ['text' => 'Готово', 'callback_data' => 'participant:done'],
             ['text' => 'Пропустить', 'callback_data' => 'participant:skip'],
+        ];
+        $rows[] = [
+            ['text' => 'Назад', 'callback_data' => 'participant:back'],
+            ['text' => 'Сначала', 'callback_data' => 'participant:restart'],
         ];
 
         return ['inline_keyboard' => $rows];

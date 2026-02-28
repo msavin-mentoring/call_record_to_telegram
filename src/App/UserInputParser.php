@@ -106,4 +106,21 @@ final class UserInputParser
             default => null,
         };
     }
+
+    public function isBackInput(string $text): bool
+    {
+        $value = mb_strtolower(trim($text));
+        return $value === 'назад'
+            || $value === 'вернуться назад'
+            || $value === 'back';
+    }
+
+    public function isRestartInput(string $text): bool
+    {
+        $value = mb_strtolower(trim($text));
+        return $value === 'сначала'
+            || $value === 'начать сначала'
+            || $value === 'restart'
+            || $value === 'reset';
+    }
 }

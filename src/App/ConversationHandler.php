@@ -124,6 +124,33 @@ final class ConversationHandler
                     return;
                 }
 
+                if ($callbackData === 'summary:back') {
+                    $tags = is_array($pending['tags'] ?? null) ? array_values($pending['tags']) : [];
+                    $this->moveToParticipantsStep(
+                        $pending,
+                        $tags,
+                        $state,
+                        $telegram,
+                        $config,
+                        $pendingChatId,
+                        'Вернулись к шагу выбора участников.'
+                    );
+                    return;
+                }
+
+                if ($callbackData === 'summary:restart') {
+                    $this->moveToTagsStep(
+                        $pending,
+                        $state,
+                        $telegram,
+                        $config,
+                        $pendingChatId,
+                        true,
+                        'Начинаем сначала.'
+                    );
+                    return;
+                }
+
                 if ($callbackData === 'summary:yes' || $callbackData === 'summary:no') {
                     $choice = $callbackData === 'summary:yes';
                     $pending['summary_requested'] = $choice;
@@ -160,6 +187,19 @@ final class ConversationHandler
         }
 
         if ($stage === 'await_tags') {
+            if ($this->parser->isRestartInput($text)) {
+                $this->moveToTagsStep(
+                    $pending,
+                    $state,
+                    $telegram,
+                    $config,
+                    $pendingChatId,
+                    true,
+                    'Начинаем сначала.'
+                );
+                return;
+            }
+
             $tags = $this->parser->parseTagsFromText($text);
             $skipTags = $this->parser->isTagsSkipInput($text);
             if ($tags === [] && !$skipTags) {
@@ -191,6 +231,32 @@ final class ConversationHandler
         }
 
         if ($stage === 'await_participants') {
+            if ($this->parser->isBackInput($text)) {
+                $this->moveToTagsStep(
+                    $pending,
+                    $state,
+                    $telegram,
+                    $config,
+                    $pendingChatId,
+                    false,
+                    'Вернулись к шагу выбора тегов.'
+                );
+                return;
+            }
+
+            if ($this->parser->isRestartInput($text)) {
+                $this->moveToTagsStep(
+                    $pending,
+                    $state,
+                    $telegram,
+                    $config,
+                    $pendingChatId,
+                    true,
+                    'Начинаем сначала.'
+                );
+                return;
+            }
+
             $participants = $this->parser->parseParticipantsFromText($text);
 
             if ($participants === [] && !$this->parser->isParticipantsSkipInput($text)) {
@@ -212,6 +278,33 @@ final class ConversationHandler
         }
 
         if ($stage === 'await_summary_choice') {
+            if ($this->parser->isBackInput($text)) {
+                $tags = is_array($pending['tags'] ?? null) ? array_values($pending['tags']) : [];
+                $this->moveToParticipantsStep(
+                    $pending,
+                    $tags,
+                    $state,
+                    $telegram,
+                    $config,
+                    $pendingChatId,
+                    'Вернулись к шагу выбора участников.'
+                );
+                return;
+            }
+
+            if ($this->parser->isRestartInput($text)) {
+                $this->moveToTagsStep(
+                    $pending,
+                    $state,
+                    $telegram,
+                    $config,
+                    $pendingChatId,
+                    true,
+                    'Начинаем сначала.'
+                );
+                return;
+            }
+
             $choice = $this->parser->parseYesNoChoice($text);
             if ($choice === null) {
                 $this->reminders->resetPendingReminder($pending, $config);
@@ -245,6 +338,19 @@ final class ConversationHandler
         }
 
         $tags = is_array($pending['tags'] ?? null) ? array_values($pending['tags']) : [];
+
+        if ($callbackData === 'tag:restart') {
+            $this->moveToTagsStep(
+                $pending,
+                $state,
+                $telegram,
+                $config,
+                $chatId,
+                true,
+                'Начинаем сначала.'
+            );
+            return;
+        }
 
         if ($callbackData === 'tag:done' || $callbackData === 'tag:skip') {
             if ($callbackData === 'tag:skip') {
@@ -324,6 +430,32 @@ final class ConversationHandler
             return;
         }
 
+        if ($callbackData === 'participant:back') {
+            $this->moveToTagsStep(
+                $pending,
+                $state,
+                $telegram,
+                $config,
+                $chatId,
+                false,
+                'Вернулись к шагу выбора тегов.'
+            );
+            return;
+        }
+
+        if ($callbackData === 'participant:restart') {
+            $this->moveToTagsStep(
+                $pending,
+                $state,
+                $telegram,
+                $config,
+                $chatId,
+                true,
+                'Начинаем сначала.'
+            );
+            return;
+        }
+
         $participants = is_array($pending['participants'] ?? null) ? array_values(array_unique($pending['participants'])) : [];
 
         if ($callbackData === 'participant:skip') {
@@ -393,6 +525,22 @@ final class ConversationHandler
         $state->save();
     }
 
+    private function sendTagsPrompt(
+        array &$pending,
+        StateStore $state,
+        TelegramClient $telegram,
+        string $chatId,
+        string $text
+    ): void {
+        $selected = is_array($pending['tags'] ?? null) ? array_values(array_unique($pending['tags'])) : [];
+        $tagsPrompt = $telegram->sendMessage($chatId, $text, $this->keyboards->buildTagsKeyboard($selected));
+        if ($tagsPrompt !== null) {
+            $pending['prompt_message_id'] = (int) ($tagsPrompt['message_id'] ?? 0);
+            $state->setPending($pending);
+            $state->save();
+        }
+    }
+
     private function sendParticipantsPrompt(
         array &$pending,
         StateStore $state,
@@ -412,6 +560,14 @@ final class ConversationHandler
             $state->setPending($pending);
             $state->save();
         }
+    }
+
+    private function buildTagsPromptText(string $header): string
+    {
+        return $header .
+            "\nВыберите теги кнопками ниже или отправьте их вручную." .
+            "\nПосле выбора нажмите «Готово»." .
+            "\nЕсли теги не нужны, нажмите «Без тега» или отправьте «-».";
     }
 
     private function finalizeParticipantsStep(
@@ -498,6 +654,49 @@ final class ConversationHandler
             $config,
             $chatId,
             $this->buildParticipantsPromptText($config, $header)
+        );
+    }
+
+    private function moveToTagsStep(
+        array &$pending,
+        StateStore $state,
+        TelegramClient $telegram,
+        Config $config,
+        string $chatId,
+        bool $resetSelection,
+        string $header
+    ): void {
+        if ($resetSelection) {
+            $pending['tags'] = [];
+            $pending['participants'] = [];
+        } else {
+            $pending['tags'] = array_values(array_unique(array_map('strval', is_array($pending['tags'] ?? null) ? $pending['tags'] : [])));
+            $pending['participants'] = array_values(array_unique(array_map('strval', is_array($pending['participants'] ?? null) ? $pending['participants'] : [])));
+        }
+
+        $pending['stage'] = 'await_tags';
+        $pending['participants_set'] = false;
+        $pending['summary_requested'] = null;
+        unset(
+            $pending['participants_prompt_message_id'],
+            $pending['summary_prompt_message_id'],
+            $pending['tags_markup_retry_at'],
+            $pending['participants_markup_retry_at'],
+            $pending['last_toggle_action'],
+            $pending['last_toggle_at_ms'],
+            $pending['next_retry_at'],
+            $pending['retry_notice_sent']
+        );
+        $this->reminders->resetPendingReminder($pending, $config);
+        $state->setPending($pending);
+        $state->save();
+
+        $this->sendTagsPrompt(
+            $pending,
+            $state,
+            $telegram,
+            $chatId,
+            $this->buildTagsPromptText($header)
         );
     }
 
