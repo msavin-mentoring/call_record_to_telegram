@@ -33,7 +33,12 @@ final class WorkerApplication
             $initialChatId = $state->getChatId();
         }
 
-        $telegram = new TelegramClient($config->telegramToken, $initialChatId, $config->telegramApiBaseUrl);
+        $telegram = new TelegramClient(
+            $config->telegramToken,
+            $initialChatId,
+            $config->telegramApiBaseUrl,
+            $config->telegramUploadApiBaseUrl
+        );
         $videoProcessor = new VideoProcessor($config->clipDurationSeconds);
         $openAi = new OpenAiClient(
             $config->openAiApiKey,

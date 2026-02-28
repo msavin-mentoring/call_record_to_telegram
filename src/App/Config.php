@@ -16,6 +16,7 @@ final class Config
         public readonly string $telegramToken,
         public readonly ?string $telegramChatId,
         public readonly string $telegramApiBaseUrl,
+        public readonly string $telegramUploadApiBaseUrl,
         /** @var string[] */
         public readonly array $telegramParticipantPresets,
         public readonly int $telegramUploadMaxBytes,
@@ -43,6 +44,7 @@ final class Config
     public static function fromEnv(): self
     {
         self::bootstrapEnvValidation();
+        $telegramApiBaseUrl = self::stringEnv('TELEGRAM_API_BASE_URL', 'https://api.telegram.org');
 
         return new self(
             recordingsDir: rtrim((string) getenv('RECORDINGS_DIR') ?: '/recordings', '/'),
@@ -50,7 +52,8 @@ final class Config
             tempDir: rtrim((string) getenv('TEMP_DIR') ?: '/tmp/call_clips', '/'),
             telegramToken: self::requiredEnv('TELEGRAM_BOT_TOKEN'),
             telegramChatId: self::nullableEnv('TELEGRAM_CHAT_ID'),
-            telegramApiBaseUrl: self::stringEnv('TELEGRAM_API_BASE_URL', 'https://api.telegram.org'),
+            telegramApiBaseUrl: $telegramApiBaseUrl,
+            telegramUploadApiBaseUrl: self::stringEnv('TELEGRAM_UPLOAD_API_BASE_URL', $telegramApiBaseUrl),
             telegramParticipantPresets: self::participantPresetsEnv('TELEGRAM_PARTICIPANT_PRESETS'),
             telegramUploadMaxBytes: self::intEnv('TELEGRAM_UPLOAD_MAX_BYTES', 49 * 1024 * 1024),
             pollIntervalSeconds: self::intEnv('POLL_INTERVAL_SECONDS', 30),

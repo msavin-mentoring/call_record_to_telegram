@@ -32,7 +32,8 @@ cp .env.example .env
 2. Заполните в `.env` минимум:
 - `TELEGRAM_BOT_TOKEN`
 - при необходимости `TELEGRAM_CHAT_ID` (если пусто, воркер попробует взять chat id из `getUpdates`)
-- `TELEGRAM_API_BASE_URL` (по умолчанию `https://api.telegram.org`; для локального Bot API: `http://bot-api:8081`)
+- `TELEGRAM_API_BASE_URL` (по умолчанию `https://api.telegram.org`; endpoint для `getUpdates`, callback и текстовых сообщений)
+- `TELEGRAM_UPLOAD_API_BASE_URL` (опционально, отдельный endpoint для `sendVideo/sendDocument`; если пусто, используется `TELEGRAM_API_BASE_URL`)
 - `TELEGRAM_PARTICIPANT_PRESETS` (опционально, список ников для кнопок выбора участников)
 - `TELEGRAM_UPLOAD_MAX_BYTES` (опционально, лимит одного отправляемого файла; по умолчанию ~49 MB)
 - `OPENAI_API_KEY` (если хотите транскрипцию и саммари через OpenAI)
@@ -67,7 +68,8 @@ RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
 - `RECORDINGS_DIR` — путь внутри контейнера к записям (по умолчанию `/recordings`)
 - `STATE_FILE` — файл состояния обработанных записей
 - `TEMP_DIR` — временная папка под клипы
-- `TELEGRAM_API_BASE_URL` — base URL Bot API (`https://api.telegram.org` или локальный `http://bot-api:8081`)
+- `TELEGRAM_API_BASE_URL` — base URL для `getUpdates`/callback/text (рекомендуется `https://api.telegram.org`)
+- `TELEGRAM_UPLOAD_API_BASE_URL` — отдельный base URL для `sendVideo`/`sendDocument` (например, локальный `http://bot-api:8081`)
 - `TELEGRAM_PARTICIPANT_PRESETS` — пресеты участников для inline-кнопок (например: `@msavin_dev,@asdfasdf`)
 - `TELEGRAM_UPLOAD_MAX_BYTES` — целевой лимит одного отправляемого файла; если полный файл больше, воркер автоматически шлет запись частями
 - `POLL_INTERVAL_SECONDS` — интервал сканирования
@@ -99,12 +101,13 @@ RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
 
 ## Локальный Bot API (опционально)
 
-Если нужно отправлять большие файлы без агрессивной нарезки, можно поднять локальный `telegram-bot-api`:
+Если нужно отправлять большие файлы без агрессивной нарезки, можно поднять локальный `telegram-bot-api` только для upload:
 
 1. Заполните в `.env`:
    - `TELEGRAM_API_ID`
    - `TELEGRAM_API_HASH`
-   - `TELEGRAM_API_BASE_URL=http://bot-api:8081`
+   - `TELEGRAM_API_BASE_URL=https://api.telegram.org`
+   - `TELEGRAM_UPLOAD_API_BASE_URL=http://bot-api:8081`
 2. Запустите профиль:
 
 ```bash
@@ -113,4 +116,5 @@ docker compose --profile local-bot-api up -d --build
 
 Если хотите вернуться на облачный endpoint Telegram:
 - `TELEGRAM_API_BASE_URL=https://api.telegram.org`
+- `TELEGRAM_UPLOAD_API_BASE_URL=` (пусто)
 - запуск без профиля `local-bot-api`.

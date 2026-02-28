@@ -11,6 +11,7 @@ use Throwable;
 final class TelegramClient
 {
     private Client $http;
+    private Client $uploadHttp;
     private ?int $lastErrorCode = null;
     private ?string $lastErrorDescription = null;
     private ?int $lastRetryAfterSeconds = null;
@@ -19,15 +20,18 @@ final class TelegramClient
         private readonly string $token,
         private ?string $chatId,
         string $apiBaseUrl = 'https://api.telegram.org',
+        ?string $uploadApiBaseUrl = null,
         ?Client $http = null,
+        ?Client $uploadHttp = null,
     ) {
-        $normalizedBaseUrl = rtrim($apiBaseUrl, '/');
-        $this->http = $http ?? new Client([
-            'base_uri' => $normalizedBaseUrl . '/bot' . $this->token . '/',
-            'timeout' => 60,
-            'connect_timeout' => 10,
-            'http_errors' => true,
-        ]);
+        $normalizedControlBaseUrl = rtrim($apiBaseUrl, '/');
+        $normalizedUploadBaseUrl = rtrim($uploadApiBaseUrl ?? $apiBaseUrl, '/');
+        $this->http = $http ?? $this->buildHttpClient($normalizedControlBaseUrl);
+        $this->uploadHttp = $uploadHttp ?? (
+            $normalizedUploadBaseUrl === $normalizedControlBaseUrl
+                ? $this->http
+                : $this->buildHttpClient($normalizedUploadBaseUrl)
+        );
     }
 
     public function getChatId(): ?string
@@ -63,7 +67,7 @@ final class TelegramClient
      */
     public function getUpdates(int $offset, int $timeout): array
     {
-        $result = $this->callApi('GET', 'getUpdates', [
+        $result = $this->callApi($this->http, 'GET', 'getUpdates', [
             'query' => [
                 'offset' => $offset,
                 'timeout' => max(0, $timeout),
@@ -142,7 +146,7 @@ final class TelegramClient
 
     private function postForm(string $method, array $fields): ?array
     {
-        return $this->callApi('POST', $method, ['form_params' => $fields]);
+        return $this->callApi($this->http, 'POST', $method, ['form_params' => $fields]);
     }
 
     private function postMultipart(
@@ -181,7 +185,7 @@ final class TelegramClient
         ];
 
         try {
-            return $this->callApi('POST', $method, [
+            return $this->callApi($this->uploadHttp, 'POST', $method, [
                 'multipart' => $multipart,
                 'timeout' => 600,
             ]);
@@ -192,14 +196,14 @@ final class TelegramClient
         }
     }
 
-    private function callApi(string $httpMethod, string $method, array $options): ?array
+    private function callApi(Client $client, string $httpMethod, string $method, array $options): ?array
     {
         $this->lastErrorCode = null;
         $this->lastErrorDescription = null;
         $this->lastRetryAfterSeconds = null;
 
         try {
-            $response = $this->http->request($httpMethod, $method, $options);
+            $response = $client->request($httpMethod, $method, $options);
             $decoded = json_decode((string) $response->getBody(), true);
             if (!is_array($decoded) || !($decoded['ok'] ?? false)) {
                 $description = is_array($decoded) ? (string) ($decoded['description'] ?? 'unknown error') : 'invalid JSON response';
@@ -237,6 +241,16 @@ final class TelegramClient
             Logger::info("Telegram {$method} failed: " . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
             return null;
         }
+    }
+
+    private function buildHttpClient(string $normalizedBaseUrl): Client
+    {
+        return new Client([
+            'base_uri' => $normalizedBaseUrl . '/bot' . $this->token . '/',
+            'timeout' => 60,
+            'connect_timeout' => 10,
+            'http_errors' => true,
+        ]);
     }
 
     /**
