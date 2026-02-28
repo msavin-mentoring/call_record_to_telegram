@@ -11,6 +11,10 @@ final class KeyboardFactory
         'summary' => 'резюме',
         'tasks' => 'задачи',
         'review' => 'ревью',
+        'legend' => 'легенда',
+        'screen' => 'скрин',
+        'crossmock' => 'кроссмок',
+        'welcome' => 'велком',
     ];
 
     /**
@@ -24,6 +28,10 @@ final class KeyboardFactory
         $sm = self::TAG_PRESETS['summary'];
         $ts = self::TAG_PRESETS['tasks'];
         $rv = self::TAG_PRESETS['review'];
+        $lg = self::TAG_PRESETS['legend'];
+        $sc = self::TAG_PRESETS['screen'];
+        $cm = self::TAG_PRESETS['crossmock'];
+        $wc = self::TAG_PRESETS['welcome'];
 
         return [
             'inline_keyboard' => [
@@ -34,6 +42,14 @@ final class KeyboardFactory
                 [
                     ['text' => (isset($selected[$ts]) ? '✅ ' : '') . $ts, 'callback_data' => 'tag:tasks'],
                     ['text' => (isset($selected[$rv]) ? '✅ ' : '') . $rv, 'callback_data' => 'tag:review'],
+                ],
+                [
+                    ['text' => (isset($selected[$lg]) ? '✅ ' : '') . $lg, 'callback_data' => 'tag:legend'],
+                    ['text' => (isset($selected[$sc]) ? '✅ ' : '') . $sc, 'callback_data' => 'tag:screen'],
+                ],
+                [
+                    ['text' => (isset($selected[$cm]) ? '✅ ' : '') . $cm, 'callback_data' => 'tag:crossmock'],
+                    ['text' => (isset($selected[$wc]) ? '✅ ' : '') . $wc, 'callback_data' => 'tag:welcome'],
                 ],
                 [
                     ['text' => 'Готово', 'callback_data' => 'tag:done'],

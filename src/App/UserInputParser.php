@@ -35,6 +35,10 @@ final class UserInputParser
                 'summary', 'резюме' => 'резюме',
                 'tasks', 'задачи' => 'задачи',
                 'review', 'ревью' => 'ревью',
+                'legend', 'легенда' => 'легенда',
+                'screen', 'screenshot', 'скрин', 'скриншот' => 'скрин',
+                'crossmock', 'кроссмок' => 'кроссмок',
+                'welcome', 'велком' => 'велком',
                 default => $lower,
             };
 

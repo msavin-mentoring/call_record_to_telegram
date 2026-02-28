@@ -5,7 +5,7 @@ PHP-воркер в Docker, который:
 - обрабатывает только "стабильные" файлы (старше порога и с неизменным размером);
 - вырезает 10 секунд из середины видео через `ffmpeg`;
 - отправляет клип в Telegram и ждет разметку от вас;
-- принимает теги кнопками-подсказками (`мок/резюме/задачи/ревью`) или вручную текстом;
+- принимает теги кнопками-подсказками (`мок/резюме/задачи/ревью/легенда/скрин/кроссмок/велком`) или вручную текстом;
 - просит ники участников (`@username`);
 - сохраняет разметку и отправляет полный файл с подписью:
   - `теги: #мок, #резюме`
@@ -98,6 +98,22 @@ RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
 - Записи обрабатываются строго по одной: следующий файл пойдет только после ввода тегов и участников по текущему.
 - Состояние хранится в `./data/state.json` (`processed`, `pending`, `last_update_id`, `chat_id`).
 - Для длинных видео транскрибация делается чанками (аудио сегменты), затем собирается общий саммари.
+
+## Ручная очистка processed записей
+
+Есть утилита `scripts/cleanup_processed_recordings.php`, которая удаляет только те `.mp4`, что есть в `state.json` в `processed` и старше заданного порога по `processed_at`.
+
+Сначала dry-run (ничего не удаляет):
+
+```bash
+php scripts/cleanup_processed_recordings.php --days=14 --recordings=/root/.jitsi-meet-cfg/jibri/recordings
+```
+
+Реальное удаление:
+
+```bash
+php scripts/cleanup_processed_recordings.php --days=14 --recordings=/root/.jitsi-meet-cfg/jibri/recordings --apply --prune-empty-dirs
+```
 
 ## Локальный Bot API (опционально)
 
