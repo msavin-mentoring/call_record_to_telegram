@@ -91,6 +91,7 @@ final class ConversationHandler
             $messageId = (int) ($callback['message']['message_id'] ?? 0);
             Logger::info('DBG callback received', [
                 'update_id' => $updateId,
+                'callback_id' => $callbackId,
                 'stage' => $stage,
                 'callback_data' => $callbackData,
                 'callback_message_id' => $messageId,
@@ -98,6 +99,26 @@ final class ConversationHandler
                 'participants_prompt_message_id' => (int) ($pending['participants_prompt_message_id'] ?? 0),
                 'summary_prompt_message_id' => (int) ($pending['summary_prompt_message_id'] ?? 0),
             ]);
+
+            $lastHandledCallbackId = (string) ($pending['last_handled_callback_id'] ?? '');
+            $lastHandledCallbackUpdateId = (int) ($pending['last_handled_callback_update_id'] ?? 0);
+            $isDuplicateById = $callbackId !== '' && $callbackId === $lastHandledCallbackId;
+            $isDuplicateByUpdateId = $updateId > 0 && $updateId === $lastHandledCallbackUpdateId;
+            if ($isDuplicateById || $isDuplicateByUpdateId) {
+                Logger::info('DBG callback ignored: duplicate delivery', [
+                    'update_id' => $updateId,
+                    'callback_id' => $callbackId,
+                    'duplicate_by_callback_id' => $isDuplicateById,
+                    'duplicate_by_update_id' => $isDuplicateByUpdateId,
+                ]);
+                return;
+            }
+
+            $pending['last_handled_callback_id'] = $callbackId;
+            $pending['last_handled_callback_update_id'] = $updateId;
+            $state->setPending($pending);
+            $state->save();
+
             if ($callbackId !== '') {
                 // Ack callback immediately to avoid Telegram client spinner/timeouts.
                 $telegram->answerCallbackQuery($callbackId);
@@ -746,7 +767,9 @@ final class ConversationHandler
             $pending['tags_markup_retry_at'],
             $pending['participants_markup_retry_at'],
             $pending['last_toggle_action'],
-            $pending['last_toggle_at_ms']
+            $pending['last_toggle_at_ms'],
+            $pending['last_handled_callback_id'],
+            $pending['last_handled_callback_update_id']
         );
         $this->reminders->resetPendingReminder($pending, $config);
         $state->setPending($pending);
@@ -793,6 +816,8 @@ final class ConversationHandler
             $pending['participants_markup_retry_at'],
             $pending['last_toggle_action'],
             $pending['last_toggle_at_ms'],
+            $pending['last_handled_callback_id'],
+            $pending['last_handled_callback_update_id'],
             $pending['next_retry_at'],
             $pending['retry_notice_sent']
         );
