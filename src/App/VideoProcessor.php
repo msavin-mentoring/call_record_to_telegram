@@ -53,6 +53,23 @@ final class VideoProcessor
         return is_file($outputFile) && ((int) filesize($outputFile)) > 0;
     }
 
+    public function remuxForTelegramUpload(string $sourceFile, string $outputFile): bool
+    {
+        $command = sprintf(
+            'ffmpeg -hide_banner -loglevel error -y -i %s -map 0 -c copy -movflags +faststart %s',
+            escapeshellarg($sourceFile),
+            escapeshellarg($outputFile)
+        );
+
+        $result = CommandRunner::run($command);
+        if ($result['code'] !== 0) {
+            Logger::info('ffmpeg remux failed for ' . $sourceFile . ': ' . trim($result['stderr'] ?: $result['stdout']));
+            return false;
+        }
+
+        return is_file($outputFile) && ((int) filesize($outputFile)) > 0;
+    }
+
     /**
      * @return string[]
      */
