@@ -199,9 +199,18 @@ final class RecordingWorkflow
 
         $caption = $this->textFormatter->buildFinalCaption($tags, $participants, $date);
 
-        $sent = $telegram->sendVideo($chatId, $filePath, $caption);
-        if ($sent === null) {
+        $preferDocumentUpload = rtrim($config->telegramUploadApiBaseUrl, '/') !== rtrim($config->telegramApiBaseUrl, '/');
+        if ($preferDocumentUpload) {
+            Logger::info('Using sendDocument for full recording because upload endpoint differs from control endpoint.');
             $sent = $telegram->sendDocument($chatId, $filePath, $caption, 'video/mp4');
+            if ($sent === null) {
+                $sent = $telegram->sendVideo($chatId, $filePath, $caption);
+            }
+        } else {
+            $sent = $telegram->sendVideo($chatId, $filePath, $caption);
+            if ($sent === null) {
+                $sent = $telegram->sendDocument($chatId, $filePath, $caption, 'video/mp4');
+            }
         }
 
         $sentByParts = false;
