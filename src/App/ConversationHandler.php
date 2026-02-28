@@ -6,6 +6,8 @@ namespace App;
 
 final class ConversationHandler
 {
+    private const TOGGLE_DEBOUNCE_MS = 1200;
+
     public function __construct(
         private readonly UserInputParser $parser,
         private readonly KeyboardFactory $keyboards,
@@ -113,8 +115,8 @@ final class ConversationHandler
                         $state,
                         $telegram,
                         $config,
-                    $openAiEnabled
-                );
+                        $openAiEnabled
+                    );
                 }
             } elseif ($stage === 'await_summary_choice') {
                 $summaryPromptMessageId = (int) ($pending['summary_prompt_message_id'] ?? 0);
@@ -267,6 +269,10 @@ final class ConversationHandler
         if ($mappedTag === null) {
             return;
         }
+        $toggleAction = 'tag:' . $mappedTag;
+        if ($this->isRapidDuplicateToggle($pending, $toggleAction)) {
+            return;
+        }
 
         $set = array_fill_keys($tags, true);
         if (isset($set[$mappedTag])) {
@@ -278,15 +284,31 @@ final class ConversationHandler
         $newTags = array_keys($set);
         sort($newTags);
         $pending['tags'] = $newTags;
+        $this->rememberToggleAction($pending, $toggleAction);
         $this->reminders->resetPendingReminder($pending, $config);
+
+        $messageId = (int) ($pending['prompt_message_id'] ?? 0);
+        $retryAt = (int) ($pending['tags_markup_retry_at'] ?? 0);
+        if ($messageId > 0 && time() >= $retryAt) {
+            $updated = $telegram->editMessageReplyMarkup(
+                $chatId,
+                $messageId,
+                $this->keyboards->buildTagsKeyboard($newTags)
+            );
+            if ($updated) {
+                unset($pending['tags_markup_retry_at']);
+            } elseif ($telegram->getLastErrorCode() === 429) {
+                $retryAfter = max(1, $telegram->getLastRetryAfterSeconds() ?? 1);
+                $pending['tags_markup_retry_at'] = time() + $retryAfter;
+                Logger::warning(
+                    'Rate limited while updating tags keyboard, deferring markup refresh.',
+                    ['retry_after' => $retryAfter]
+                );
+            }
+        }
 
         $state->setPending($pending);
         $state->save();
-
-        $messageId = (int) ($pending['prompt_message_id'] ?? 0);
-        if ($messageId > 0) {
-            $telegram->editMessageReplyMarkup($chatId, $messageId, $this->keyboards->buildTagsKeyboard($newTags));
-        }
     }
 
     private function handleParticipantCallback(
@@ -328,6 +350,10 @@ final class ConversationHandler
         if ($username === '' || preg_match('/^@[A-Za-z0-9_]{3,32}$/', $username) !== 1) {
             return;
         }
+        $toggleAction = 'participant:' . $username;
+        if ($this->isRapidDuplicateToggle($pending, $toggleAction)) {
+            return;
+        }
 
         $set = array_fill_keys($participants, true);
         if (isset($set[$username])) {
@@ -340,18 +366,31 @@ final class ConversationHandler
         sort($participants);
         $pending['participants'] = $participants;
         $pending['participants_set'] = false;
+        $this->rememberToggleAction($pending, $toggleAction);
         $this->reminders->resetPendingReminder($pending, $config);
-        $state->setPending($pending);
-        $state->save();
 
         $messageId = (int) ($pending['participants_prompt_message_id'] ?? 0);
-        if ($messageId > 0) {
-            $telegram->editMessageReplyMarkup(
+        $retryAt = (int) ($pending['participants_markup_retry_at'] ?? 0);
+        if ($messageId > 0 && time() >= $retryAt) {
+            $updated = $telegram->editMessageReplyMarkup(
                 $chatId,
                 $messageId,
                 $this->keyboards->buildParticipantsKeyboard($config->telegramParticipantPresets, $participants)
             );
+            if ($updated) {
+                unset($pending['participants_markup_retry_at']);
+            } elseif ($telegram->getLastErrorCode() === 429) {
+                $retryAfter = max(1, $telegram->getLastRetryAfterSeconds() ?? 1);
+                $pending['participants_markup_retry_at'] = time() + $retryAfter;
+                Logger::warning(
+                    'Rate limited while updating participants keyboard, deferring markup refresh.',
+                    ['retry_after' => $retryAfter]
+                );
+            }
         }
+
+        $state->setPending($pending);
+        $state->save();
     }
 
     private function sendParticipantsPrompt(
@@ -383,6 +422,12 @@ final class ConversationHandler
         Config $config,
         bool $openAiEnabled
     ): void {
+        unset(
+            $pending['participants_markup_retry_at'],
+            $pending['last_toggle_action'],
+            $pending['last_toggle_at_ms']
+        );
+
         if ($openAiEnabled) {
             $summaryPrompt = $telegram->sendMessage(
                 $chatId,
@@ -435,7 +480,13 @@ final class ConversationHandler
         $pending['stage'] = 'await_participants';
         $pending['participants_set'] = false;
         $pending['summary_requested'] = null;
-        unset($pending['summary_prompt_message_id']);
+        unset(
+            $pending['summary_prompt_message_id'],
+            $pending['tags_markup_retry_at'],
+            $pending['participants_markup_retry_at'],
+            $pending['last_toggle_action'],
+            $pending['last_toggle_at_ms']
+        );
         $this->reminders->resetPendingReminder($pending, $config);
         $state->setPending($pending);
         $state->save();
@@ -460,5 +511,28 @@ final class ConversationHandler
         }
 
         return implode(', ', array_map(static fn(string $tag): string => '#' . $tag, $tags));
+    }
+
+    private function isRapidDuplicateToggle(array $pending, string $action): bool
+    {
+        $lastAction = (string) ($pending['last_toggle_action'] ?? '');
+        $lastAtMs = (int) ($pending['last_toggle_at_ms'] ?? 0);
+        if ($lastAction === '' || $lastAtMs <= 0) {
+            return false;
+        }
+
+        $delta = $this->nowMs() - $lastAtMs;
+        return $lastAction === $action && $delta >= 0 && $delta < self::TOGGLE_DEBOUNCE_MS;
+    }
+
+    private function rememberToggleAction(array &$pending, string $action): void
+    {
+        $pending['last_toggle_action'] = $action;
+        $pending['last_toggle_at_ms'] = $this->nowMs();
+    }
+
+    private function nowMs(): int
+    {
+        return (int) floor(microtime(true) * 1000);
     }
 }

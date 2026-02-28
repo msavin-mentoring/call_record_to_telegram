@@ -13,6 +13,7 @@ final class TelegramClient
     private Client $http;
     private ?int $lastErrorCode = null;
     private ?string $lastErrorDescription = null;
+    private ?int $lastRetryAfterSeconds = null;
 
     public function __construct(
         private readonly string $token,
@@ -42,6 +43,11 @@ final class TelegramClient
     public function getLastErrorDescription(): ?string
     {
         return $this->lastErrorDescription;
+    }
+
+    public function getLastRetryAfterSeconds(): ?int
+    {
+        return $this->lastRetryAfterSeconds;
     }
 
     public function rememberChatId(string $chatId): void
@@ -190,6 +196,7 @@ final class TelegramClient
     {
         $this->lastErrorCode = null;
         $this->lastErrorDescription = null;
+        $this->lastRetryAfterSeconds = null;
 
         try {
             $response = $this->http->request($httpMethod, $method, $options);
@@ -197,13 +204,10 @@ final class TelegramClient
             if (!is_array($decoded) || !($decoded['ok'] ?? false)) {
                 $description = is_array($decoded) ? (string) ($decoded['description'] ?? 'unknown error') : 'invalid JSON response';
                 if (is_array($decoded)) {
-                    $code = $decoded['error_code'] ?? null;
-                    if (is_int($code)) {
-                        $this->lastErrorCode = $code;
-                    } elseif (is_numeric($code)) {
-                        $this->lastErrorCode = (int) $code;
+                    $this->captureApiErrorDetails($decoded);
+                    if ($this->lastErrorDescription === null) {
+                        $this->lastErrorDescription = $description;
                     }
-                    $this->lastErrorDescription = $description;
                 }
 
                 if ($this->isIgnorableAnswerCallbackQueryError($method, $description)) {
@@ -222,17 +226,7 @@ final class TelegramClient
                 $details = trim((string) $e->getResponse()->getBody());
                 $decoded = json_decode($details, true);
                 if (is_array($decoded)) {
-                    $code = $decoded['error_code'] ?? null;
-                    if (is_int($code)) {
-                        $this->lastErrorCode = $code;
-                    } elseif (is_numeric($code)) {
-                        $this->lastErrorCode = (int) $code;
-                    }
-
-                    $description = $decoded['description'] ?? null;
-                    if (is_string($description) && $description !== '') {
-                        $this->lastErrorDescription = $description;
-                    }
+                    $this->captureApiErrorDetails($decoded);
                 }
             }
 
@@ -242,6 +236,31 @@ final class TelegramClient
 
             Logger::info("Telegram {$method} failed: " . $e->getMessage() . ($details !== '' ? ' | ' . $details : ''));
             return null;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $decoded
+     */
+    private function captureApiErrorDetails(array $decoded): void
+    {
+        $code = $decoded['error_code'] ?? null;
+        if (is_int($code)) {
+            $this->lastErrorCode = $code;
+        } elseif (is_numeric($code)) {
+            $this->lastErrorCode = (int) $code;
+        }
+
+        $description = $decoded['description'] ?? null;
+        if (is_string($description) && $description !== '') {
+            $this->lastErrorDescription = $description;
+        }
+
+        $retryAfter = $decoded['parameters']['retry_after'] ?? null;
+        if (is_int($retryAfter) && $retryAfter > 0) {
+            $this->lastRetryAfterSeconds = $retryAfter;
+        } elseif (is_numeric($retryAfter) && (int) $retryAfter > 0) {
+            $this->lastRetryAfterSeconds = (int) $retryAfter;
         }
     }
 
