@@ -89,6 +89,14 @@ final class ConversationHandler
             $callbackId = (string) ($callback['id'] ?? '');
             $callbackData = (string) ($callback['data'] ?? '');
             $messageId = (int) ($callback['message']['message_id'] ?? 0);
+            $lastHandledCallbackId = (string) ($pending['last_handled_callback_id'] ?? '');
+            $lastHandledCallbackUpdateId = (int) ($pending['last_handled_callback_update_id'] ?? 0);
+            $isDuplicateById = $callbackId !== '' && $callbackId === $lastHandledCallbackId;
+            $isDuplicateByUpdateId = $updateId > 0 && $updateId === $lastHandledCallbackUpdateId;
+            if ($isDuplicateById || $isDuplicateByUpdateId) {
+                return;
+            }
+
             Logger::info('DBG callback received', [
                 'update_id' => $updateId,
                 'callback_id' => $callbackId,
@@ -99,20 +107,6 @@ final class ConversationHandler
                 'participants_prompt_message_id' => (int) ($pending['participants_prompt_message_id'] ?? 0),
                 'summary_prompt_message_id' => (int) ($pending['summary_prompt_message_id'] ?? 0),
             ]);
-
-            $lastHandledCallbackId = (string) ($pending['last_handled_callback_id'] ?? '');
-            $lastHandledCallbackUpdateId = (int) ($pending['last_handled_callback_update_id'] ?? 0);
-            $isDuplicateById = $callbackId !== '' && $callbackId === $lastHandledCallbackId;
-            $isDuplicateByUpdateId = $updateId > 0 && $updateId === $lastHandledCallbackUpdateId;
-            if ($isDuplicateById || $isDuplicateByUpdateId) {
-                Logger::info('DBG callback ignored: duplicate delivery', [
-                    'update_id' => $updateId,
-                    'callback_id' => $callbackId,
-                    'duplicate_by_callback_id' => $isDuplicateById,
-                    'duplicate_by_update_id' => $isDuplicateByUpdateId,
-                ]);
-                return;
-            }
 
             $pending['last_handled_callback_id'] = $callbackId;
             $pending['last_handled_callback_update_id'] = $updateId;
