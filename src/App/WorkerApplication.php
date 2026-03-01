@@ -12,6 +12,15 @@ final class WorkerApplication
     /** @var resource|null */
     private $instanceLock = null;
 
+    public function __destruct()
+    {
+        if (is_resource($this->instanceLock)) {
+            @flock($this->instanceLock, LOCK_UN);
+            @fclose($this->instanceLock);
+            $this->instanceLock = null;
+        }
+    }
+
     public function run(): void
     {
         $config = Config::fromEnv();
@@ -55,7 +64,7 @@ final class WorkerApplication
         $textFormatter = new TextFormatter();
         $reminders = new ReminderService();
 
-        $conversation = new ConversationHandler($parser, $keyboards, $reminders);
+        $conversation = new ConversationHandler($parser, $recordings, $keyboards, $reminders);
         $workflow = new RecordingWorkflow($recordings, $keyboards, $reminders, $textFormatter);
 
         Logger::info('Worker started. Watching directory: ' . $config->recordingsDir);

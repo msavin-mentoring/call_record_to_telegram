@@ -10,6 +10,7 @@ final class ConversationHandler
 
     public function __construct(
         private readonly UserInputParser $parser,
+        private readonly RecordingFileService $files,
         private readonly KeyboardFactory $keyboards,
         private readonly ReminderService $reminders,
     ) {
@@ -65,6 +66,10 @@ final class ConversationHandler
         TelegramClient $telegram,
         Config $config
     ): void {
+        if ($this->handleReprocessCommand($update, $state, $telegram, $config)) {
+            return;
+        }
+
         $openAiEnabled = $config->openAiApiKey !== null && trim($config->openAiApiKey) !== '';
         $pending = $state->getPending();
         if ($pending === null) {
@@ -369,6 +374,161 @@ final class ConversationHandler
         }
     }
 
+    private function handleReprocessCommand(
+        array $update,
+        StateStore $state,
+        TelegramClient $telegram,
+        Config $config
+    ): bool {
+        $message = $update['message'] ?? null;
+        if (!is_array($message)) {
+            return false;
+        }
+
+        $text = trim((string) ($message['text'] ?? ''));
+        if ($text === '') {
+            return false;
+        }
+
+        $command = $this->parser->parseReprocessCommand($text);
+        if ($command === null) {
+            return false;
+        }
+
+        $chatId = $this->resolveChatIdFromUpdate($update);
+        if ($chatId === null || $chatId === '') {
+            return true;
+        }
+
+        $knownChatId = $telegram->getChatId() ?? $config->telegramChatId ?? $state->getChatId();
+        if ($knownChatId !== null && $knownChatId !== '' && $chatId !== $knownChatId) {
+            Logger::info('Ignoring /reprocess command from unknown chat.', [
+                'chat_id' => $chatId,
+                'known_chat_id' => $knownChatId,
+            ]);
+            return true;
+        }
+
+        $target = trim($command['target']);
+        if ($target === '') {
+            $telegram->sendMessage($chatId, 'Использование: /reprocess <имя_файла.mp4>');
+            return true;
+        }
+
+        $normalizedTarget = $this->normalizeReprocessTarget($target);
+        $targetBaseName = basename($normalizedTarget);
+        if ($targetBaseName === '' || $targetBaseName === '.' || $targetBaseName === '..') {
+            $telegram->sendMessage($chatId, 'Не смог разобрать имя файла. Пример: /reprocess meeting_2026-02-21-09-59-21.mp4');
+            return true;
+        }
+
+        $pending = $state->getPending();
+        $pendingKey = is_array($pending) ? (string) ($pending['key'] ?? '') : '';
+        if ($pendingKey !== '' && ($pendingKey === $normalizedTarget || basename($pendingKey) === $targetBaseName)) {
+            $telegram->sendMessage($chatId, 'Этот файл уже в обработке: ' . basename($pendingKey));
+            return true;
+        }
+
+        $matchingProcessedKeys = $this->findProcessedKeysForReprocess($state, $normalizedTarget, $targetBaseName);
+        if ($matchingProcessedKeys === []) {
+            if ($this->hasUnprocessedRecordingByBasename($config, $state, $targetBaseName)) {
+                $telegram->sendMessage(
+                    $chatId,
+                    'Этот файл уже необработан и будет отправлен автоматически: ' . $targetBaseName
+                );
+            } else {
+                $telegram->sendMessage(
+                    $chatId,
+                    'Не нашел обработанный файл с таким именем: ' . $targetBaseName
+                );
+            }
+            return true;
+        }
+
+        if (count($matchingProcessedKeys) > 1) {
+            $examples = implode("\n", array_map(
+                static fn(string $key): string => '- ' . $key,
+                array_slice($matchingProcessedKeys, 0, 5)
+            ));
+            $telegram->sendMessage(
+                $chatId,
+                "Нашел несколько файлов с таким именем.\n"
+                . "Уточните путь относительно RECORDINGS_DIR, например:\n"
+                . "/reprocess room1/{$targetBaseName}\n"
+                . "Варианты:\n"
+                . $examples
+            );
+            return true;
+        }
+
+        $key = $matchingProcessedKeys[0];
+        $filePath = $config->recordingsDir . DIRECTORY_SEPARATOR . $key;
+        if (!is_file($filePath)) {
+            $telegram->sendMessage($chatId, 'Файл не найден на диске, переобработка невозможна: ' . $key);
+            return true;
+        }
+
+        if (!$state->unmarkProcessed($key)) {
+            $telegram->sendMessage($chatId, 'Не удалось поставить файл в переобработку: ' . $key);
+            return true;
+        }
+
+        $state->save();
+
+        $pendingAfter = $state->getPending();
+        if ($pendingAfter !== null) {
+            $current = basename((string) ($pendingAfter['key'] ?? 'текущий файл'));
+            $telegram->sendMessage(
+                $chatId,
+                'Переобработка запланирована: ' . basename($key) . "\n"
+                . 'Сначала завершу текущую запись: ' . $current
+            );
+            return true;
+        }
+
+        $telegram->sendMessage(
+            $chatId,
+            'Переобработка запланирована: ' . basename($key) . "\n"
+            . 'Запущу в ближайшем цикле.'
+        );
+        return true;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function findProcessedKeysForReprocess(StateStore $state, string $normalizedTarget, string $targetBaseName): array
+    {
+        if ($normalizedTarget !== '' && $state->isProcessed($normalizedTarget)) {
+            return [$normalizedTarget];
+        }
+
+        return $state->findProcessedKeysByBasename($targetBaseName);
+    }
+
+    private function normalizeReprocessTarget(string $target): string
+    {
+        $normalized = str_replace('\\', '/', trim($target));
+        $normalized = ltrim($normalized, '/');
+        return trim($normalized);
+    }
+
+    private function hasUnprocessedRecordingByBasename(Config $config, StateStore $state, string $baseName): bool
+    {
+        foreach ($this->files->findVideoFiles($config->recordingsDir) as $filePath) {
+            $key = $this->files->relativePath($config->recordingsDir, $filePath);
+            if (basename($key) !== $baseName) {
+                continue;
+            }
+
+            if (!$state->isProcessed($key)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function handleTagCallback(
         string $callbackData,
         array $pending,
@@ -647,7 +807,7 @@ final class ConversationHandler
             $state->setPending($pending);
             $state->save();
             Logger::info('DBG tags prompt sent', [
-                'message_id' => (int) ($pending['prompt_message_id'] ?? 0),
+                'message_id' => (int) $pending['prompt_message_id'],
                 'selected_tags' => $selected,
             ]);
         } else {
@@ -674,7 +834,7 @@ final class ConversationHandler
             $state->setPending($pending);
             $state->save();
             Logger::info('DBG participants prompt sent', [
-                'message_id' => (int) ($pending['participants_prompt_message_id'] ?? 0),
+                'message_id' => (int) $pending['participants_prompt_message_id'],
                 'selected_participants' => $selected,
             ]);
         } else {

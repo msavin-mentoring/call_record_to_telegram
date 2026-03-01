@@ -30,6 +30,40 @@ final class StateStore
         $this->data['processed'][$key] = $payload;
     }
 
+    public function unmarkProcessed(string $key): bool
+    {
+        if (!isset($this->data['processed'][$key])) {
+            return false;
+        }
+
+        unset($this->data['processed'][$key]);
+        return true;
+    }
+
+    /**
+     * @return string[]
+     */
+    public function findProcessedKeysByBasename(string $baseName): array
+    {
+        if ($baseName === '') {
+            return [];
+        }
+
+        $matches = [];
+        foreach (array_keys($this->data['processed']) as $key) {
+            if (!is_string($key)) {
+                continue;
+            }
+
+            if (basename($key) === $baseName) {
+                $matches[] = $key;
+            }
+        }
+
+        sort($matches);
+        return $matches;
+    }
+
     public function getPending(): ?array
     {
         $pending = $this->data['pending'] ?? null;

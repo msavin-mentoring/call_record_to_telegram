@@ -127,4 +127,29 @@ final class UserInputParser
             || $value === 'restart'
             || $value === 'reset';
     }
+
+    /**
+     * @return array{target:string}|null
+     */
+    public function parseReprocessCommand(string $text): ?array
+    {
+        $value = trim($text);
+        if ($value === '') {
+            return null;
+        }
+
+        $target = null;
+        if (preg_match('/^\/reprocess(?:@[A-Za-z0-9_]+)?(?:\s+(.+))?$/u', $value, $matches) === 1) {
+            $target = trim((string) ($matches[1] ?? ''));
+        } elseif (preg_match('/^reprocess(?:\s+(.+))?$/ui', $value, $matches) === 1) {
+            $target = trim((string) ($matches[1] ?? ''));
+        } elseif (preg_match('/^переобработать(?:\s+(.+))?$/ui', $value, $matches) === 1) {
+            $target = trim((string) ($matches[1] ?? ''));
+        } else {
+            return null;
+        }
+
+        $target = trim($target, " \t\n\r\0\x0B\"'");
+        return ['target' => $target];
+    }
 }
