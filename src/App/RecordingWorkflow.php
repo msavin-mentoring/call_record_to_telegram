@@ -310,7 +310,22 @@ final class RecordingWorkflow
         $state->save();
 
         $telegram->sendMessage($chatId, 'Сохранено и отправлено: ' . basename($filePath));
+        $remainingCount = $this->countUnprocessedRecordings($config, $state);
+        $telegram->sendMessage($chatId, 'Необработанных видеозаписей: ' . $remainingCount);
         Logger::info('Processed and sent full recording: ' . $key);
+    }
+
+    private function countUnprocessedRecordings(Config $config, StateStore $state): int
+    {
+        $count = 0;
+        foreach ($this->files->findVideoFiles($config->recordingsDir) as $candidatePath) {
+            $candidateKey = $this->files->relativePath($config->recordingsDir, $candidatePath);
+            if (!$state->isProcessed($candidateKey)) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     private function formatDuration(float $durationSeconds): string
