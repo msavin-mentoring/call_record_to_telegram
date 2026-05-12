@@ -1,11 +1,18 @@
+COMPOSE_ENV_FILES := --env-file .env
+ifneq ("$(wildcard .env.local)","")
+COMPOSE_ENV_FILES += --env-file .env.local
+endif
+
+COMPOSE := docker compose $(COMPOSE_ENV_FILES)
+
 up:
-	docker compose up -d --build
+	$(COMPOSE) up -d --build
 
 up-prod:
-	docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build worker
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml up -d --build worker
 
 logs:
-	docker compose logs -f worker
+	$(COMPOSE) logs -f worker
 
 logs-prod:
-	docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f worker
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml logs -f worker

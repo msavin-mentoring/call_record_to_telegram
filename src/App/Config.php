@@ -111,8 +111,11 @@ final class Config
 
     private static function bootstrapEnvValidation(): void
     {
-        $dotenv = Dotenv::createImmutable(dirname(__DIR__, 2));
-        $dotenv->safeLoad();
+        $projectRoot = dirname(__DIR__, 2);
+        Dotenv::createImmutable($projectRoot, '.env')->safeLoad();
+        Dotenv::createMutable($projectRoot, '.env.local')->safeLoad();
+
+        $dotenv = Dotenv::createImmutable($projectRoot);
 
         $dotenv->required(['TELEGRAM_BOT_TOKEN'])->notEmpty();
 

@@ -21,53 +21,55 @@ PHP-воркер в Docker, который:
 - помечает запись как обработанную в `state.json`, чтобы не отправлять повторно.
 
 Код организован через Composer autoload (PSR-4), классы лежат в `src/App/`.
-`vlucas/phpdotenv` используется для загрузки `.env` (если файл есть) и базовой валидации обязательных/типовых переменных.
+`vlucas/phpdotenv` загружает базовый `.env` из репозитория и затем, если есть, накладывает поверх него `.env.local`.
 
 ## Быстрый старт
 
-1. Создайте `.env` из шаблона:
+1. Базовый `.env` уже закоммичен. Создайте только локальный override:
 
 ```bash
-cp .env.example .env
+cp .env.local.example .env.local
 ```
 
-2. Заполните в `.env` минимум:
+2. Заполните в `.env.local` минимум:
 - `TELEGRAM_BOT_TOKEN`
 - при необходимости `TELEGRAM_CHAT_ID` (если пусто, воркер попробует взять chat id из `getUpdates`)
-- `TELEGRAM_API_BASE_URL` (по умолчанию `https://api.telegram.org`; endpoint для `getUpdates`, callback и текстовых сообщений)
-- `TELEGRAM_UPLOAD_API_BASE_URL` (опционально, отдельный endpoint для `sendVideo/sendDocument`; если пусто, используется `TELEGRAM_API_BASE_URL`)
-- `TELEGRAM_PARTICIPANT_PRESETS` (опционально, список ников для кнопок выбора участников)
-- `TELEGRAM_UPLOAD_MAX_BYTES` (опционально, лимит одного отправляемого файла; по умолчанию ~49 MB)
+- при необходимости `RECORDINGS_HOST_PATH`, если на сервере путь к Jibri отличается от дефолтного
 - `AITUNNEL_API_KEY` (предпочтительно; можно оставить `OPENAI_API_KEY` как fallback для совместимого прокси-ключа)
 - `PLATFORM_API_BASE_URL`, `PLATFORM_IDENTITY_EXCHANGE_SECRET` и `PLATFORM_API_TELEGRAM_USERNAME` для списка учеников из `platform`
+- если нужен auto-match по `mentor_session`, то еще `PLATFORM_DB_*`
+
+`PLATFORM_IDENTITY_EXCHANGE_SECRET` должен совпадать со значением `IDENTITY_EXCHANGE_SECRET` в `platform`.
+В dev-окружении по умолчанию это `dev-identity-exchange-secret`.
+Для `PLATFORM_API_TELEGRAM_USERNAME` лучше использовать технический ник вроде `@call_record_bot`, а не реального ученика.
 
 3. Запустите:
 
 ```bash
-docker compose up -d --build
+make up
 ```
 
 После первого билда код из `./src` монтируется в контейнер, поэтому для применения изменений в `worker.php` достаточно:
 
 ```bash
-docker compose up -d --force-recreate worker
+docker compose --env-file .env --env-file .env.local up -d --force-recreate worker
 ```
 
 4. Посмотреть логи:
 
 ```bash
-docker compose logs -f worker
+make logs
 ```
 
 Однократный прогон (без демона):
 
 ```bash
-RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
+RUN_ONCE=true docker compose --env-file .env --env-file .env.local up --build --abort-on-container-exit worker
 ```
 
 ## Параметры
 
-- `RECORDINGS_HOST_PATH` — путь на хосте к записям Jibri (монтируется в контейнер как `/recordings`)
+- `RECORDINGS_HOST_PATH` — путь на хосте к записям Jibri (монтируется в контейнер как `/recordings`); удобно переопределять в `.env.local`
 - `RECORDINGS_DIR` — путь внутри контейнера к записям (по умолчанию `/recordings`)
 - `STATE_FILE` — файл состояния обработанных записей
 - `TEMP_DIR` — временная папка под клипы
@@ -92,11 +94,11 @@ RUN_ONCE=true docker compose up --build --abort-on-container-exit worker
 - `OPENAI_SUMMARY_CHUNK_CHARS` — размер текстового чанка для map-reduce саммари
 - `SEND_TRANSCRIPT_FILE` — отправлять ли `.txt` файл с полным транскриптом в авто-флоу совместимости
 - `PLATFORM_API_BASE_URL` — base URL `platform` без суффикса `/api` (по умолчанию `http://host.docker.internal:8083`)
-- `PLATFORM_IDENTITY_EXCHANGE_SECRET` — shared secret для `POST /api/auth/session/exchange`
+- `PLATFORM_IDENTITY_EXCHANGE_SECRET` — shared secret для `POST /api/auth/session/exchange`; должен совпадать с `IDENTITY_EXCHANGE_SECRET` в `platform`
 - `PLATFORM_IDENTITY_EXCHANGE_ISSUER` — issuer exchange token (по умолчанию `identity-service`)
 - `PLATFORM_IDENTITY_EXCHANGE_AUDIENCE` — audience exchange token (по умолчанию `platform`)
 - `PLATFORM_API_ACTOR_SUBJECT_ID` — технический `sub` для admin-session exchange
-- `PLATFORM_API_TELEGRAM_USERNAME` — технический telegram username для exchange
+- `PLATFORM_API_TELEGRAM_USERNAME` — технический telegram username для exchange; лучше отдельный бот/сервисный ник, не ученик
 - `PLATFORM_API_DISPLAY_NAME` — displayName для exchange session
 - `PLATFORM_STUDENTS_CACHE_SECONDS` — TTL кеша списка учеников из `platform`
 - `PLATFORM_DB_HOST`, `PLATFORM_DB_PORT`, `PLATFORM_DB_NAME`, `PLATFORM_DB_USER`, `PLATFORM_DB_PASSWORD` — optional доступ к БД `platform` для автоподсказки по `mentor_session`
@@ -164,7 +166,7 @@ php scripts/cleanup_processed_recordings.php --days=14 --recordings=/root/.jitsi
 
 Если нужно отправлять большие файлы без агрессивной нарезки, можно поднять локальный `telegram-bot-api` только для upload:
 
-1. Заполните в `.env`:
+1. Заполните в `.env.local`:
    - `TELEGRAM_API_ID`
    - `TELEGRAM_API_HASH`
    - `TELEGRAM_API_BASE_URL=https://api.telegram.org`
@@ -172,7 +174,7 @@ php scripts/cleanup_processed_recordings.php --days=14 --recordings=/root/.jitsi
 2. Запустите профиль:
 
 ```bash
-docker compose --profile local-bot-api up -d --build
+docker compose --env-file .env --env-file .env.local --profile local-bot-api up -d --build
 ```
 
 Если хотите вернуться на облачный endpoint Telegram:
@@ -186,6 +188,8 @@ docker compose --profile local-bot-api up -d --build
 - GitHub Actions workflow `.github/workflows/deploy.yml`
 - запуск по git tag или вручную через `workflow_dispatch`
 - на сервере выполняется `make up-prod`
+- в репозитории лежит безопасный базовый `.env`
+- секреты и серверные отличия живут в незакоммиченном `.env.local`
 
 Нужные GitHub secrets:
 - `DEPLOY_HOST`
@@ -202,3 +206,8 @@ make up-prod
 ```
 
 `docker-compose.prod.yml` убирает dev-монтирование `./src`, чтобы контейнер в проде запускался из собранного образа.
+
+Рекомендуемая схема файлов на сервере:
+- `.env` приходит из git и содержит безопасные дефолты
+- `.env.local` создается вручную один раз и содержит реальные секреты, хостовый `RECORDINGS_HOST_PATH`, optional `PLATFORM_DB_*` и прочие server-specific override
+- при деплое `git checkout` обновляет `.env`, но не трогает `.env.local`

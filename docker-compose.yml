@@ -4,7 +4,10 @@ services:
     container_name: call-record-to-telegram
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -19,7 +22,10 @@ services:
     profiles:
       - local-bot-api
     env_file:
-      - .env
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
     command:
       - --api-id=${TELEGRAM_API_ID}
       - --api-hash=${TELEGRAM_API_HASH}
