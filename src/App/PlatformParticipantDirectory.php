@@ -24,9 +24,12 @@ final class PlatformParticipantDirectory
     public function resolveForRecording(\DateTimeImmutable $recordedAt, array $fallbackPresets): array
     {
         $presets = $fallbackPresets;
+        $platformStudentCount = null;
+        $activePresetCount = null;
 
         try {
             $students = $this->platformApiClient->fetchStudents();
+            $platformStudentCount = count($students);
             $activePresets = [];
             foreach ($students as $student) {
                 if ($student['status'] !== 'active') {
@@ -35,6 +38,7 @@ final class PlatformParticipantDirectory
 
                 $activePresets[] = $student['telegramNick'];
             }
+            $activePresetCount = count($activePresets);
 
             if ($activePresets !== []) {
                 $presets = array_values(array_unique($activePresets));
@@ -59,6 +63,14 @@ final class PlatformParticipantDirectory
                 'error' => $e->getMessage(),
             ]);
         }
+
+        Logger::info('DBG platform participant directory resolved', [
+            'fallback_presets_count' => count($fallbackPresets),
+            'platform_student_count' => $platformStudentCount,
+            'active_presets_count' => $activePresetCount,
+            'final_presets_count' => count($presets),
+            'suggested_count' => count($suggested),
+        ]);
 
         return [
             'presets' => $presets,

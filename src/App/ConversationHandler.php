@@ -803,6 +803,11 @@ final class ConversationHandler
         $recordingDate = trim((string) ($pending['date'] ?? ''));
         $recordingTime = trim((string) ($pending['time'] ?? ''));
         $selection = $this->resolveParticipantSelection($config, $pending, $recordingDate, $recordingTime);
+        Logger::info('DBG participant selection resolved', [
+            'presets_count' => count($selection['presets']),
+            'suggested_count' => count($selection['suggested']),
+            'has_suggestion_text' => $selection['suggestion_text'] !== null,
+        ]);
 
         $pending['tags'] = array_values(array_unique(array_map('strval', $tags)));
         $pending['stage'] = 'await_participants';
