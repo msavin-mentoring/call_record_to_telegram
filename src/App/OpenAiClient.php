@@ -15,6 +15,7 @@ final class OpenAiClient
 
     public function __construct(
         private readonly ?string $apiKey,
+        private readonly string $baseUrl,
         private readonly string $transcribeModel,
         private readonly string $summaryModel,
         private readonly ?string $language,
@@ -29,7 +30,7 @@ final class OpenAiClient
         }
 
         $this->http = $http ?? new Client([
-            'base_uri' => 'https://api.openai.com/v1/',
+            'base_uri' => rtrim($this->baseUrl, '/') . '/',
             'timeout' => 300,
             'connect_timeout' => 10,
             'http_errors' => true,
@@ -54,7 +55,7 @@ final class OpenAiClient
 
         $chunks = $this->extractAudioChunks($videoFilePath, $tempDir);
         if ($chunks === []) {
-            Logger::info('OpenAI transcription skipped: no audio chunks produced.');
+            Logger::info('AI transcription skipped: no audio chunks produced.');
             return null;
         }
 
@@ -64,7 +65,7 @@ final class OpenAiClient
             @unlink($chunkPath);
 
             if ($text === null) {
-                Logger::info('OpenAI transcription failed on chunk #' . ($index + 1));
+                Logger::info('AI transcription failed on chunk #' . ($index + 1));
                 return null;
             }
 
@@ -75,13 +76,13 @@ final class OpenAiClient
 
         $transcript = trim(implode("\n\n", $parts));
         if ($transcript === '') {
-            Logger::info('OpenAI transcription returned empty text.');
+            Logger::info('AI transcription returned empty text.');
             return null;
         }
 
         $summary = $this->summarizeTranscript($transcript);
         if ($summary === null || trim($summary) === '') {
-            Logger::info('OpenAI summary failed.');
+            Logger::info('AI summary failed.');
             return null;
         }
 
@@ -128,7 +129,7 @@ final class OpenAiClient
     {
         $resource = fopen($chunkPath, 'rb');
         if ($resource === false) {
-            Logger::info('OpenAI transcription: failed to open chunk file: ' . $chunkPath);
+            Logger::info('AI transcription: failed to open chunk file: ' . $chunkPath);
             return null;
         }
 
@@ -152,7 +153,7 @@ final class OpenAiClient
                 'POST',
                 'audio/transcriptions',
                 ['multipart' => $multipart, 'timeout' => 600],
-                'OpenAI transcription'
+                'AI transcription'
             );
         } finally {
             if (is_resource($resource)) {
@@ -237,7 +238,7 @@ final class OpenAiClient
             'POST',
             'chat/completions',
             ['json' => $payload, 'timeout' => 300],
-            'OpenAI summary'
+            'AI summary'
         );
 
         if ($decoded === null) {

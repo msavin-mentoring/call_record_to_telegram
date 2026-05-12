@@ -4,12 +4,25 @@ declare(strict_types=1);
 
 namespace App;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use FilesystemIterator;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 
 final class RecordingFileService
 {
+    private DateTimeZone $timezone;
+
+    public function __construct(string $timezone = 'Europe/Moscow')
+    {
+        try {
+            $this->timezone = new DateTimeZone(trim($timezone) !== '' ? trim($timezone) : 'Europe/Moscow');
+        } catch (\Throwable) {
+            $this->timezone = new DateTimeZone('Europe/Moscow');
+        }
+    }
+
     /**
      * @return string[]
      */
@@ -102,10 +115,10 @@ final class RecordingFileService
 
         $mtime = filemtime($filePath);
         if ($mtime !== false) {
-            return date('Y-m-d', $mtime);
+            return $this->dateTimeFromTimestamp($mtime)->format('Y-m-d');
         }
 
-        return date('Y-m-d');
+        return $this->now()->format('Y-m-d');
     }
 
     /**
@@ -122,15 +135,16 @@ final class RecordingFileService
 
         $mtime = filemtime($filePath);
         if ($mtime !== false) {
+            $dateTime = $this->dateTimeFromTimestamp($mtime);
             return [
-                'date' => date('Y-m-d', $mtime),
-                'time' => date('H:i:s', $mtime),
+                'date' => $dateTime->format('Y-m-d'),
+                'time' => $dateTime->format('H:i:s'),
             ];
         }
 
         return [
-            'date' => date('Y-m-d'),
-            'time' => date('H:i:s'),
+            'date' => $this->now()->format('Y-m-d'),
+            'time' => $this->now()->format('H:i:s'),
         ];
     }
 
@@ -152,5 +166,15 @@ final class RecordingFileService
         }
 
         return $path;
+    }
+
+    private function dateTimeFromTimestamp(int $timestamp): DateTimeImmutable
+    {
+        return (new DateTimeImmutable('@' . $timestamp))->setTimezone($this->timezone);
+    }
+
+    private function now(): DateTimeImmutable
+    {
+        return new DateTimeImmutable('now', $this->timezone);
     }
 }

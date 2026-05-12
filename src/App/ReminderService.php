@@ -69,7 +69,7 @@ final class ReminderService
     public function pendingNeedsUserReply(array $pending): bool
     {
         $stage = (string) ($pending['stage'] ?? '');
-        if ($stage === 'await_tags' || $stage === 'await_summary_choice') {
+        if ($stage === 'await_tags') {
             return true;
         }
 
@@ -151,7 +151,6 @@ final class ReminderService
         return match ($stage) {
             'await_tags' => "Напоминание: пришлите теги для созвона (или нажмите кнопки в сообщении с клипом).",
             'await_participants' => "Напоминание: пришлите участников в формате @user1 @user2 (или '-' для пропуска).",
-            'await_summary_choice' => "Напоминание: нужно ли саммари? Ответьте «да» или «нет» (или нажмите кнопку).",
             default => "Напоминание: ожидаю ваш ответ по текущему созвону.",
         };
     }

@@ -128,6 +128,15 @@ final class UserInputParser
             || $value === 'reset';
     }
 
+    public function isSummaryCommand(string $text): bool
+    {
+        $value = trim($text);
+
+        return preg_match('/^\/summary(?:@[A-Za-z0-9_]+)?$/u', $value) === 1
+            || preg_match('/^summary$/ui', $value) === 1
+            || preg_match('/^\/transcript(?:@[A-Za-z0-9_]+)?$/u', $value) === 1;
+    }
+
     /**
      * @return array{target:string}|null
      */

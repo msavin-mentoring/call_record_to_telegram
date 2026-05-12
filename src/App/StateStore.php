@@ -30,6 +30,12 @@ final class StateStore
         $this->data['processed'][$key] = $payload;
     }
 
+    public function getProcessed(string $key): ?array
+    {
+        $payload = $this->data['processed'][$key] ?? null;
+        return is_array($payload) ? $payload : null;
+    }
+
     public function unmarkProcessed(string $key): bool
     {
         if (!isset($this->data['processed'][$key])) {
@@ -62,6 +68,32 @@ final class StateStore
 
         sort($matches);
         return $matches;
+    }
+
+    public function findProcessedKeyByMessageId(int $messageId): ?string
+    {
+        if ($messageId <= 0) {
+            return null;
+        }
+
+        foreach ($this->data['processed'] as $key => $payload) {
+            if (!is_string($key) || !is_array($payload)) {
+                continue;
+            }
+
+            $messageIds = $payload['message_ids'] ?? null;
+            if (!is_array($messageIds)) {
+                continue;
+            }
+
+            foreach ($messageIds as $candidateId) {
+                if ((int) $candidateId === $messageId) {
+                    return $key;
+                }
+            }
+        }
+
+        return null;
     }
 
     public function getPending(): ?array

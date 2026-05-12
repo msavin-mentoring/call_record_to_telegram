@@ -95,6 +95,7 @@ final class RecordingWorkflow
                 'summary_requested' => null,
                 'prompt_message_id' => (int) ($sent['message_id'] ?? 0),
                 'date' => $recordedAt['date'],
+                'time' => $recordedAt['time'],
             ];
             $this->reminders->resetPendingReminder($pending, $config);
 
@@ -119,34 +120,17 @@ final class RecordingWorkflow
         }
 
         $stage = (string) ($pending['stage'] ?? '');
+        if ($stage === 'await_summary_choice') {
+            $pending['summary_requested'] = false;
+            $pending['stage'] = 'ready_finalize';
+            unset($pending['summary_prompt_message_id']);
+            $this->reminders->clearPendingReminder($pending);
+            $state->setPending($pending);
+            $state->save();
+            $stage = 'ready_finalize';
+        }
+
         if ($stage === 'await_participants' && (bool) ($pending['participants_set'] ?? false)) {
-            $chatIdForPrompt = (string) ($pending['chat_id'] ?? '');
-            if ($chatIdForPrompt === '') {
-                return;
-            }
-
-            if ($openAi->isEnabled()) {
-                $summaryPrompt = $telegram->sendMessage(
-                    $chatIdForPrompt,
-                    'Нужно сделать саммари по созвону?',
-                    $this->keyboards->buildSummaryChoiceKeyboard()
-                );
-
-                $pending['stage'] = 'await_summary_choice';
-                $pending['summary_requested'] = null;
-                if ($summaryPrompt !== null) {
-                    $pending['summary_prompt_message_id'] = (int) ($summaryPrompt['message_id'] ?? 0);
-                    $this->reminders->resetPendingReminder($pending, $config);
-                } else {
-                    $pending['summary_requested'] = false;
-                    $pending['stage'] = 'ready_finalize';
-                    $this->reminders->clearPendingReminder($pending);
-                }
-                $state->setPending($pending);
-                $state->save();
-                return;
-            }
-
             $pending['summary_requested'] = false;
             $pending['stage'] = 'ready_finalize';
             $this->reminders->clearPendingReminder($pending);
@@ -200,6 +184,7 @@ final class RecordingWorkflow
         $caption = $this->textFormatter->buildFinalCaption($tags, $participants, $date);
 
         $preferDocumentUpload = rtrim($config->telegramUploadApiBaseUrl, '/') !== rtrim($config->telegramApiBaseUrl, '/');
+        $recordingMessageIds = [];
         if ($preferDocumentUpload) {
             Logger::info('Using sendDocument for full recording because upload endpoint differs from control endpoint.');
             $sent = $telegram->sendDocument($chatId, $filePath, $caption, 'video/mp4');
@@ -211,6 +196,10 @@ final class RecordingWorkflow
             if ($sent === null) {
                 $sent = $telegram->sendDocument($chatId, $filePath, $caption, 'video/mp4');
             }
+        }
+        $singleMessageId = $this->extractMessageId($sent);
+        if ($singleMessageId !== null) {
+            $recordingMessageIds[] = $singleMessageId;
         }
 
         $sentByParts = false;
@@ -230,7 +219,8 @@ final class RecordingWorkflow
                     $chatId,
                     $filePath,
                     $caption,
-                    $key
+                    $key,
+                    $recordingMessageIds
                 );
                 if ($sentByParts) {
                     Logger::info('Full recording sent in parts after Telegram 413: ' . $key);
@@ -258,7 +248,7 @@ final class RecordingWorkflow
         $summaryRequested = (bool) ($pending['summary_requested'] ?? false);
 
         if ($openAi->isEnabled() && $summaryRequested) {
-            Logger::info('Starting OpenAI transcription and summary for: ' . $key);
+            Logger::info('Starting AI transcription and summary for: ' . $key);
             $transcriptionStatus = 'failed';
             $openAiResult = $openAi->transcribeAndSummarize($filePath, $config->tempDir);
 
@@ -270,7 +260,7 @@ final class RecordingWorkflow
                 $summaryMessage = "саммари:\n" . $this->textFormatter->truncateForTelegram($summary, 3800);
                 $telegram->sendMessage($chatId, $summaryMessage);
 
-                if ($config->sendTranscriptFile && $transcript !== null && trim($transcript) !== '') {
+                if ($config->sendTranscriptFile && trim($transcript) !== '') {
                     $transcriptFile = $this->files->writeTranscriptToTempFile($config->tempDir, $key, $transcript);
                     if ($transcriptFile !== null) {
                         $telegram->sendDocument(
@@ -283,7 +273,7 @@ final class RecordingWorkflow
                     }
                 }
             } else {
-                $telegram->sendMessage($chatId, 'Не удалось получить транскрипт/саммари через OpenAI.');
+                $telegram->sendMessage($chatId, 'Не удалось получить транскрипт/саммари через AITUNNEL.');
             }
         } elseif ($openAi->isEnabled()) {
             $transcriptionStatus = 'skipped_by_user';
@@ -304,6 +294,7 @@ final class RecordingWorkflow
             'transcript_preview' => $transcriptPreview,
             'transcript_chars' => $transcriptChars,
             'summary' => $summary,
+            'message_ids' => array_values(array_unique(array_map('intval', $recordingMessageIds))),
         ]);
 
         $state->clearPending();
@@ -365,7 +356,8 @@ final class RecordingWorkflow
         string $chatId,
         string $filePath,
         string $caption,
-        string $key
+        string $key,
+        array &$messageIds
     ): bool {
         $size = filesize($filePath);
         $duration = $videoProcessor->getDuration($filePath);
@@ -419,6 +411,11 @@ final class RecordingWorkflow
                     $lastErrorCode = $telegram->getLastErrorCode();
                     break;
                 }
+
+                $messageId = $this->extractMessageId($sent);
+                if ($messageId !== null) {
+                    $messageIds[] = $messageId;
+                }
             }
 
             $this->cleanupTempFiles($parts);
@@ -445,5 +442,11 @@ final class RecordingWorkflow
         foreach ($paths as $path) {
             @unlink($path);
         }
+    }
+
+    private function extractMessageId(?array $payload): ?int
+    {
+        $messageId = (int) ($payload['message_id'] ?? 0);
+        return $messageId > 0 ? $messageId : null;
     }
 }

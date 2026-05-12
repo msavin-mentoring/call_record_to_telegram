@@ -1,0 +1,47 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to deploy
+        required: true
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -T 10 -p "${{ secrets.DEPLOY_PORT || '22' }}" "${{ secrets.DEPLOY_HOST }}" > ~/.ssh/known_hosts
+          ssh-keygen -lf ~/.ssh/known_hosts
+          ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}' | grep -Fx "${{ secrets.DEPLOY_HOST_FINGERPRINT }}"
+
+      - name: Deploy over SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes "${DEPLOY_USER}@${DEPLOY_HOST}" <<EOF
+          set -eu
+          cd "${DEPLOY_PATH}"
+          git fetch --all --prune --tags
+          git rev-parse "refs/tags/${DEPLOY_TAG}" >/dev/null
+          git checkout --detach "${DEPLOY_TAG}"
+          make up-prod
+          EOF

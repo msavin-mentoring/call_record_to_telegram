@@ -24,7 +24,8 @@ final class WorkerApplication
     public function run(): void
     {
         $config = Config::fromEnv();
-        Logger::setTimezone($config->reminderTimezone);
+        date_default_timezone_set($config->appTimezone);
+        Logger::setTimezone($config->appTimezone);
         $this->acquireInstanceLock($config->stateFile);
 
         if (!is_dir($config->recordingsDir)) {
@@ -51,6 +52,7 @@ final class WorkerApplication
         $videoProcessor = new VideoProcessor($config->clipDurationSeconds);
         $openAi = new OpenAiClient(
             $config->openAiApiKey,
+            $config->openAiBaseUrl,
             $config->openAiTranscribeModel,
             $config->openAiSummaryModel,
             $config->openAiLanguage,
@@ -58,13 +60,22 @@ final class WorkerApplication
             $config->openAiSummaryChunkChars
         );
 
-        $recordings = new RecordingFileService();
+        $recordings = new RecordingFileService($config->appTimezone);
+        $platformApiClient = new PlatformApiClient($config);
+        $platformParticipants = new PlatformParticipantDirectory($config, $platformApiClient);
         $keyboards = new KeyboardFactory();
         $parser = new UserInputParser();
         $textFormatter = new TextFormatter();
         $reminders = new ReminderService();
 
-        $conversation = new ConversationHandler($parser, $recordings, $keyboards, $reminders);
+        $conversation = new ConversationHandler(
+            $parser,
+            $recordings,
+            $keyboards,
+            $reminders,
+            $textFormatter,
+            $platformParticipants
+        );
         $workflow = new RecordingWorkflow($recordings, $keyboards, $reminders, $textFormatter);
 
         Logger::info('Worker started. Watching directory: ' . $config->recordingsDir);
@@ -72,7 +83,7 @@ final class WorkerApplication
         $nextScanAt = 0;
         while (true) {
             try {
-                $conversation->processUpdates($config, $state, $telegram);
+                $conversation->processUpdates($config, $state, $telegram, $openAi);
                 $workflow->maybeFinalizePending($config, $state, $telegram, $openAi, $videoProcessor);
                 $reminders->maybeSendPendingReminder($config, $state, $telegram);
 

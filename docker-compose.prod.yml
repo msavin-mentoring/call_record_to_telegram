@@ -1,0 +1,5 @@
+services:
+  worker:
+    volumes: !reset
+      - ${RECORDINGS_HOST_PATH:-/root/.jitsi-meet-cfg/jibri/recordings}:/recordings:ro
+      - ./data:/app/data
