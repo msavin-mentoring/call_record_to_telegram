@@ -211,3 +211,22 @@ make up-prod
 - `.env` приходит из git и содержит безопасные дефолты
 - `.env.local` создается вручную один раз и содержит реальные секреты, хостовый `RECORDINGS_HOST_PATH`, optional `PLATFORM_DB_*` и прочие server-specific override
 - при деплое `git checkout` обновляет `.env`, но не трогает `.env.local`
+
+## Tag release
+
+Есть `make tag`, перенесенный по мотивам `../mock`, но вынесенный в отдельный скрипт `scripts/tag-release.sh`.
+
+Примеры:
+
+```bash
+make tag
+make tag BUMP=minor
+make tag BUMP=major
+make tag-dry-run
+```
+
+По умолчанию делается patch bump:
+- ищется последний tag формата `vX.Y.Z`
+- рабочее дерево должно быть чистым
+- создается новый git tag
+- tag пушится в `origin`
