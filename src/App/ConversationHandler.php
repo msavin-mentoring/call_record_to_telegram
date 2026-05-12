@@ -144,6 +144,21 @@ final class ConversationHandler
                     $this->handleTagCallback($callbackData, $pending, $state, $telegram, $config);
                 }
             } elseif ($stage === 'await_participants') {
+                $tagsPromptMessageId = (int) ($pending['prompt_message_id'] ?? 0);
+                if (str_starts_with($callbackData, 'tag:')) {
+                    if ($messageId !== $tagsPromptMessageId) {
+                        Logger::info('DBG callback ignored: tags prompt message mismatch during participants stage', [
+                            'callback_message_id' => $messageId,
+                            'expected_message_id' => $tagsPromptMessageId,
+                            'callback_data' => $callbackData,
+                        ]);
+                        return;
+                    }
+
+                    $this->handleTagCallback($callbackData, $pending, $state, $telegram, $config);
+                    return;
+                }
+
                 $participantsPromptMessageId = (int) ($pending['participants_prompt_message_id'] ?? 0);
                 if ($participantsPromptMessageId > 0 && $messageId !== $participantsPromptMessageId) {
                     Logger::info('DBG callback ignored: participants prompt message mismatch', [
